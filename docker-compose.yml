@@ -1,0 +1,22 @@
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: verdant-store-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: verdant_admin
+      POSTGRES_PASSWORD: verdant_dev_password
+      POSTGRES_DB: verdant_store
+    ports:
+      - "5433:5432"
+    volumes:
+      - verdant_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U verdant_admin -d verdant_store"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  verdant_postgres_data:

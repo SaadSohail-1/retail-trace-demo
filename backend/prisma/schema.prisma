@@ -1,0 +1,93 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum SyncStatus {
+  PENDING
+  SYNCED
+  FAILED
+}
+
+model Supplier {
+  id        String    @id @default(cuid())
+  name      String
+  email     String    @unique
+  country   String
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  products  Product[]
+
+  @@index([active])
+}
+
+model Product {
+  id             String      @id @default(cuid())
+  name           String
+  price          Decimal     @db.Decimal(10, 2)
+  stockQuantity  Int
+  organic        Boolean     @default(false)
+  manufacturedOn DateTime    @db.Date
+  supplierId     String
+  supplier       Supplier    @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  orderItems     OrderItem[]
+
+  @@index([supplierId])
+}
+
+model Order {
+  id           String      @id @default(cuid())
+  customerName String
+  total        Decimal     @db.Decimal(10, 2)
+  status       String      @default("PENDING")
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  items        OrderItem[]
+
+  @@index([status, createdAt])
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  productId String
+  quantity  Int
+  unitPrice Decimal @db.Decimal(10, 2)
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, productId])
+  @@index([productId])
+}
+
+model RetailTraceSync {
+  id                  String     @id @default(cuid())
+  entityType          String
+  localEntityId       String
+  retailTraceRecordId String?
+  syncStatus          SyncStatus @default(PENDING)
+  errorMessage        String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  @@unique([entityType, localEntityId])
+  @@unique([entityType, retailTraceRecordId])
+  @@index([syncStatus])
+}
+
+model IntegrationConfig {
+  id               Int      @id @default(1)
+  supplierSchemaId String?
+  productSchemaId  String?
+  orderSchemaId    String?
+  initialized      Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}

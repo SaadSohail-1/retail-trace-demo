@@ -1,0 +1,138 @@
+import axios from "axios";
+
+interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+}
+
+export interface IntegrationStatus {
+  status: "initialized" | "partial" | "not_initialized";
+  initialized: boolean;
+  schemas: {
+    supplierSchemaId: string | null;
+    productSchemaId: string | null;
+    orderSchemaId: string | null;
+  };
+  synchronization: {
+    synced: number;
+    failed: number;
+    pending: number;
+  };
+  orderSynchronization: "implemented" | "pending_design";
+}
+
+export interface BlockchainHealth {
+  status: "connected" | "unavailable" | "unknown";
+  checkedAt: string;
+}
+
+export interface SchemaSummary {
+  schemaId: string;
+  name: string;
+  version: number;
+}
+
+export interface RetailTraceRecord {
+  recordId: string;
+  businessId: string;
+  schemaId: string;
+  data: Record<string, unknown>;
+  transactionId: string | null;
+  status: "PENDING" | "CONFIRMED" | "FAILED";
+  createdAt: string;
+}
+
+export interface InitializationResult {
+  status: "initialized" | "partial" | "failed";
+  initialized: boolean;
+  schemas: IntegrationStatus["schemas"];
+  completed: string[];
+  failedAt?: string;
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+export interface SyncResult {
+  id: string;
+  entityType: string;
+  localEntityId: string;
+  retailTraceRecordId: string | null;
+  syncStatus: "PENDING" | "SYNCED" | "FAILED";
+  errorMessage: string | null;
+}
+
+export interface VerificationResult {
+  recordId: string;
+  verified: boolean;
+  transactionId: string | null;
+}
+
+const client = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5001",
+  timeout: 15_000,
+  headers: { Accept: "application/json" },
+});
+
+export function getErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const body: unknown = error.response?.data;
+    if (typeof body === "object" && body !== null && "error" in body) {
+      const apiError = body.error;
+      if (
+        typeof apiError === "object" &&
+        apiError !== null &&
+        "message" in apiError &&
+        typeof apiError.message === "string"
+      ) {
+        return apiError.message;
+      }
+    }
+    return error.message || "The business backend could not be reached.";
+  }
+  return error instanceof Error ? error.message : "An unexpected error occurred.";
+}
+
+export const api = {
+  async getIntegrationStatus(): Promise<IntegrationStatus> {
+    const response = await client.get<ApiResponse<IntegrationStatus>>("/api/integration/status");
+    return response.data.data;
+  },
+
+  async getHealth(): Promise<BlockchainHealth> {
+    const response = await client.get<ApiResponse<BlockchainHealth>>("/api/integration/health");
+    return response.data.data;
+  },
+
+  async getSchemas(): Promise<SchemaSummary[]> {
+    const response = await client.get<ApiResponse<SchemaSummary[]>>("/api/integration/schemas");
+    return response.data.data;
+  },
+
+  async getRecords(): Promise<RetailTraceRecord[]> {
+    const response = await client.get<ApiResponse<RetailTraceRecord[]>>("/api/integration/records");
+    return response.data.data;
+  },
+
+  async initialize(): Promise<InitializationResult> {
+    const response = await client.post<ApiResponse<InitializationResult>>(
+      "/api/integration/initialize",
+    );
+    return response.data.data;
+  },
+
+  async retry(syncId: string): Promise<SyncResult> {
+    const response = await client.post<ApiResponse<SyncResult>>(
+      `/api/integration/retry/${encodeURIComponent(syncId)}`,
+    );
+    return response.data.data;
+  },
+
+  async verify(recordId: string): Promise<VerificationResult> {
+    const response = await client.get<ApiResponse<VerificationResult>>(
+      `/api/integration/records/${encodeURIComponent(recordId)}/verify`,
+    );
+    return response.data.data;
+  },
+};
