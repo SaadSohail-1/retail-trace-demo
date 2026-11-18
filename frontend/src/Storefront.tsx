@@ -25,6 +25,10 @@ export default function Storefront() {
   const [error, setError] = useState("");
   const [completed, setCompleted] = useState<OrderView | null>(null);
   const [verification, setVerification] = useState<VerificationResult | null>(null);
+  const [successTab, setSuccessTab] = useState<"receipt" | "verify">("receipt");
+  const [transactionInput, setTransactionInput] = useState("");
+  const [transactionVerification, setTransactionVerification] = useState<VerificationResult | null>(null);
+  const [transactionVerifying, setTransactionVerifying] = useState(false);
 
   async function refresh() {
     try {
@@ -51,6 +55,10 @@ export default function Storefront() {
     try {
       const order = await api.createOrder(customerName.trim(), selected.product.id);
       setCompleted(order);
+      setSuccessTab("receipt");
+      setVerification(null);
+      setTransactionVerification(null);
+      setTransactionInput(order.synchronization?.transactionId ?? "");
       setSelected(null);
       setCustomerName("");
       await refresh();
@@ -71,6 +79,25 @@ export default function Storefront() {
       setVerification(await api.verify(recordId));
     } catch (verifyError) {
       setError(getErrorMessage(verifyError));
+    }
+  }
+
+  async function verifyTransaction(event: React.FormEvent) {
+    event.preventDefault();
+    const transactionId = transactionInput.trim();
+    if (!transactionId) {
+      setError("Enter a transaction ID to verify.");
+      return;
+    }
+    setTransactionVerifying(true);
+    setError("");
+    setTransactionVerification(null);
+    try {
+      setTransactionVerification(await api.verifyByTransaction(transactionId));
+    } catch (verifyError) {
+      setError(getErrorMessage(verifyError));
+    } finally {
+      setTransactionVerifying(false);
     }
   }
 
@@ -177,10 +204,60 @@ export default function Storefront() {
             <span className="success-icon"><Check size={24} /></span>
             <p>ORDER CONFIRMED</p>
             <h2>Thank you, {completed.order.customerName}</h2>
-            <label>Order ID<code>{completed.order.id}</code></label>
-            <label>Transaction ID<code>{completed.synchronization?.transactionId ?? "Sync pending"}</code></label>
-            {verification && <label>Blockchain<code>{verification.verified ? "Verified" : "Not verified"}</code></label>}
-            <button onClick={() => void verifyOrder(completed)}>Verify on blockchain</button>
+            <div className="success-tabs" role="tablist" aria-label="Order confirmation options">
+              <button
+                type="button"
+                className={successTab === "receipt" ? "active" : ""}
+                onClick={() => setSuccessTab("receipt")}
+                role="tab"
+                aria-selected={successTab === "receipt"}
+              >
+                Receipt
+              </button>
+              <button
+                type="button"
+                className={successTab === "verify" ? "active" : ""}
+                onClick={() => setSuccessTab("verify")}
+                role="tab"
+                aria-selected={successTab === "verify"}
+              >
+                Verify transaction
+              </button>
+            </div>
+
+            {successTab === "receipt" ? (
+              <>
+                <label>Order ID<code>{completed.order.id}</code></label>
+                <label>Transaction ID<code>{completed.synchronization?.transactionId ?? "Sync pending"}</code></label>
+                {verification && <label>Blockchain<code>{verification.verified ? "Verified" : "Not verified"}</code></label>}
+                <button type="button" onClick={() => setSuccessTab("verify")}>Verify on blockchain</button>
+              </>
+            ) : (
+              <form className="transaction-verifier" onSubmit={verifyTransaction}>
+                <label htmlFor="transaction-id">
+                  Transaction ID
+                  <input
+                    id="transaction-id"
+                    value={transactionInput}
+                    onChange={(event) => setTransactionInput(event.target.value)}
+                    placeholder="Enter the complete transaction ID"
+                    autoComplete="off"
+                  />
+                </label>
+                <button type="submit" disabled={transactionVerifying}>
+                  {transactionVerifying ? "Checking blockchain..." : "Check transaction"}
+                </button>
+                {transactionVerification && (
+                  <div className={`transaction-result ${transactionVerification.verified ? "verified" : "not-verified"}`}>
+                    <ShieldCheck size={18} />
+                    <div>
+                      <strong>{transactionVerification.verified ? "Transaction verified" : "Transaction not verified"}</strong>
+                      <code>{transactionVerification.transactionId ?? transactionInput}</code>
+                    </div>
+                  </div>
+                )}
+              </form>
+            )}
           </div>
         </div>
       )}

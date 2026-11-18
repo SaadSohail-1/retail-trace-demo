@@ -317,6 +317,20 @@
   box-shadow: 0 24px 70px rgba(23, 43, 30, 0.22);
 }
 
+.success-modal {
+  width: min(680px, 100%);
+}
+
+.success-modal code {
+  width: 100%;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  user-select: all;
+  line-height: 1.7;
+}
+
 .order-modal h2 {
   margin: 0 0 22px;
   font-family: Georgia, serif;
@@ -371,6 +385,77 @@
 
 .success-modal h2 {
   margin-bottom: 14px;
+}
+
+.success-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 18px 0 6px;
+  padding: 5px;
+  border-radius: 9px;
+  background: #eef1e9;
+}
+
+.success-tabs button {
+  height: 38px;
+  background: transparent;
+  color: #718071;
+  box-shadow: none;
+}
+
+.success-tabs button.active {
+  background: #fff;
+  color: #314936;
+  box-shadow: 0 1px 4px rgba(36, 58, 42, 0.09);
+}
+
+.transaction-verifier {
+  display: grid;
+  gap: 10px;
+  text-align: left;
+}
+
+.transaction-verifier label code,
+.transaction-verifier input {
+  width: 100%;
+}
+
+.transaction-verifier input {
+  height: 44px;
+  margin-top: 7px;
+  padding: 0 12px;
+  border: 1px solid #dfe4da;
+  border-radius: 8px;
+  background: #fff;
+  color: #34453a;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+}
+
+.transaction-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid #dce7d5;
+  border-radius: 8px;
+  background: #f3f8ef;
+  color: #55744b;
+  text-align: left;
+}
+
+.transaction-result.not-verified {
+  border-color: #eadcba;
+  background: #fbf8eb;
+  color: #816a38;
+}
+
+.transaction-result div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
 }
 
 .success-modal label code {

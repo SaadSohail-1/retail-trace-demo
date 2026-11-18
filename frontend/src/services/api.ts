@@ -199,4 +199,11 @@ export const api = {
     );
     return response.data.data;
   },
+
+  async verifyByTransaction(transactionId: string): Promise<VerificationResult> {
+    const response = await client.get<ApiResponse<VerificationResult>>(
+      `/api/integration/transactions/${encodeURIComponent(transactionId)}/verify`,
+    );
+    return response.data.data;
+  },
 };

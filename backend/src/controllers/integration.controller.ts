@@ -52,3 +52,28 @@ export async function verifyRecord(request: Request, response: Response): Promis
     data: await retailTraceApi.verifyRecord(requiredParam(request.params.recordId, "recordId")),
   });
 }
+
+export async function verifyTransaction(
+  request: Request,
+  response: Response,
+): Promise<void> {
+  const transactionId = requiredParam(
+    request.params.transactionId,
+    "transactionId",
+  );
+  const records = await retailTraceApi.listRecords();
+  const record = records.find((item) => item.transactionId === transactionId);
+
+  if (!record) {
+    throw new IntegrationError(
+      404,
+      "TRANSACTION_RECORD_NOT_FOUND",
+      "No RetailTrace record matches this transaction ID",
+    );
+  }
+
+  response.json({
+    success: true,
+    data: await retailTraceApi.verifyRecord(record.recordId),
+  });
+}
