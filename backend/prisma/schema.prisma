@@ -73,6 +73,9 @@ model RetailTraceSync {
   localEntityId       String
   retailTraceRecordId String?
   transactionId       String?
+  retailTraceStatus   String?
+  submissionUncertain Boolean    @default(false)
+  submissionStartedAt DateTime?
   syncStatus          SyncStatus @default(PENDING)
   errorMessage        String?
   createdAt           DateTime   @default(now())

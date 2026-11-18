@@ -60,8 +60,25 @@ export interface SyncResult {
   localEntityId: string;
   retailTraceRecordId: string | null;
   syncStatus: "PENDING" | "SYNCED" | "FAILED";
+  retailTraceStatus: "PENDING" | "CONFIRMED" | "FAILED" | null;
+  submissionUncertain: boolean;
   errorMessage: string | null;
   transactionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupplierView {
+  supplier: {
+    id: string;
+    name: string;
+    email: string;
+    country: string;
+    active: boolean;
+    createdAt: string;
+    updatedAt: string;
+  };
+  synchronization: SyncResult | null;
 }
 
 export interface ProductView {
@@ -102,6 +119,26 @@ export interface VerificationResult {
   transactionId: string | null;
 }
 
+function parseVerification(value: unknown): VerificationResult {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("recordId" in value) ||
+    typeof value.recordId !== "string" ||
+    !("verified" in value) ||
+    typeof value.verified !== "boolean" ||
+    !("transactionId" in value) ||
+    (value.transactionId !== null && typeof value.transactionId !== "string")
+  ) {
+    throw new Error("RetailTrace returned an invalid verification response.");
+  }
+  return {
+    recordId: value.recordId,
+    verified: value.verified,
+    transactionId: value.transactionId,
+  };
+}
+
 const client = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5001",
   timeout: 15_000,
@@ -128,6 +165,11 @@ export function getErrorMessage(error: unknown): string {
 }
 
 export const api = {
+  async getSuppliers(): Promise<SupplierView[]> {
+    const response = await client.get<ApiResponse<SupplierView[]>>("/api/suppliers");
+    return response.data.data;
+  },
+
   async getProducts(): Promise<ProductView[]> {
     const response = await client.get<ApiResponse<ProductView[]>>("/api/products");
     return response.data.data;
@@ -135,6 +177,13 @@ export const api = {
 
   async getOrders(): Promise<OrderView[]> {
     const response = await client.get<ApiResponse<OrderView[]>>("/api/orders");
+    return response.data.data;
+  },
+
+  async getOrder(orderId: string): Promise<OrderView> {
+    const response = await client.get<ApiResponse<OrderView>>(
+      `/api/orders/${encodeURIComponent(orderId)}`,
+    );
     return response.data.data;
   },
 
@@ -197,13 +246,13 @@ export const api = {
     const response = await client.get<ApiResponse<VerificationResult>>(
       `/api/integration/records/${encodeURIComponent(recordId)}/verify`,
     );
-    return response.data.data;
+    return parseVerification(response.data?.data);
   },
 
   async verifyByTransaction(transactionId: string): Promise<VerificationResult> {
     const response = await client.get<ApiResponse<VerificationResult>>(
       `/api/integration/transactions/${encodeURIComponent(transactionId)}/verify`,
     );
-    return response.data.data;
+    return parseVerification(response.data?.data);
   },
 };

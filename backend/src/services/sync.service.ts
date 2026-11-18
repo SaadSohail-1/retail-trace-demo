@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { prisma } from "../config/database.js";
 import type {
   IntegrationConfig,
@@ -7,11 +8,15 @@ import type {
   RetailTraceSync,
   Supplier,
 } from "../generated/prisma/client.js";
-import { IntegrationError } from "./integration-errors.js";
+import { IntegrationError, RetailTraceApiError } from "./integration-errors.js";
 import {
   retailTraceApi,
+  type RetailTraceRecord,
   type RetailTraceRecordValue,
+  type RetailTraceSchemaField,
+  type RetailTraceSchemaSummary,
 } from "./retailtrace-api.service.js";
+import { findCompatibleSchema } from "./schema-compatibility.service.js";
 
 type EntityType = "Supplier" | "Product" | "Order";
 type SchemaKey = "supplierSchemaId" | "productSchemaId" | "orderSchemaId";
@@ -24,19 +29,29 @@ export interface SyncRepository {
   findSync(id: string): Promise<RetailTraceSync | null>;
   getOrCreateSync(entityType: EntityType, localEntityId: string): Promise<RetailTraceSync>;
   getIntegrationConfig(): Promise<IntegrationConfig | null>;
-  markSynced(
+  updateOrderSchemaId(schemaId: string): Promise<void>;
+  markSubmissionStarted(
     syncId: string,
-    retailTraceRecordId: string,
-    transactionId?: string | null,
-  ): Promise<RetailTraceSync>;
-  markFailed(syncId: string, error: unknown): Promise<void>;
+    startedAt: Date,
+  ): Promise<RetailTraceSync | null>;
+  saveRecord(syncId: string, record: RetailTraceRecord): Promise<RetailTraceSync>;
+  markPending(syncId: string, message: string): Promise<RetailTraceSync>;
+  markFailed(syncId: string, error: unknown, submissionUncertain: boolean): Promise<void>;
 }
 
 export interface SyncRecordClient {
+  listRecords(): Promise<RetailTraceRecord[]>;
+  getRecord(recordId: string): Promise<RetailTraceRecord>;
   createRecord(input: {
     schemaId: string;
     data: Record<string, RetailTraceRecordValue>;
-  }): Promise<{ recordId: string; transactionId?: string | null }>;
+  }): Promise<RetailTraceRecord>;
+  listSchemas(): Promise<RetailTraceSchemaSummary[]>;
+  getSchema(schemaId: string): ReturnType<typeof retailTraceApi.getSchema>;
+  createSchema(input: {
+    name: string;
+    fields: RetailTraceSchemaField[];
+  }): Promise<RetailTraceSchemaSummary>;
 }
 
 const prismaSyncRepository: SyncRepository = {
@@ -55,27 +70,121 @@ const prismaSyncRepository: SyncRepository = {
       update: {},
     }),
   getIntegrationConfig: () => prisma.integrationConfig.findUnique({ where: { id: 1 } }),
-  markSynced: (syncId, retailTraceRecordId, transactionId) =>
+  async updateOrderSchemaId(schemaId) {
+    await prisma.integrationConfig.update({
+      where: { id: 1 },
+      data: { orderSchemaId: schemaId },
+    });
+  },
+  async markSubmissionStarted(syncId, startedAt) {
+    const claimed = await prisma.retailTraceSync.updateMany({
+      where: {
+        id: syncId,
+        retailTraceRecordId: null,
+        submissionUncertain: false,
+      },
+      data: {
+        submissionStartedAt: startedAt,
+        submissionUncertain: true,
+        syncStatus: "PENDING",
+        errorMessage: null,
+      },
+    });
+    if (claimed.count === 0) {
+      return null;
+    }
+    return prisma.retailTraceSync.findUnique({ where: { id: syncId } });
+  },
+  saveRecord: (syncId, record) =>
     prisma.retailTraceSync.update({
       where: { id: syncId },
       data: {
-        retailTraceRecordId,
-        transactionId: transactionId ?? null,
-        syncStatus: "SYNCED",
-        errorMessage: null,
+        retailTraceRecordId: record.recordId,
+        transactionId: record.transactionId,
+        retailTraceStatus: record.status,
+        submissionUncertain: false,
+        syncStatus: record.status === "FAILED" ? "FAILED" : "SYNCED",
+        errorMessage:
+          record.status === "FAILED" ? "RetailTrace reports publication failure" : null,
       },
     }),
-  async markFailed(syncId, error) {
+  async markPending(syncId, message) {
+    await prisma.retailTraceSync.updateMany({
+      where: {
+        id: syncId,
+        retailTraceRecordId: null,
+        submissionUncertain: true,
+      },
+      data: {
+        syncStatus: "PENDING",
+        errorMessage: message,
+      },
+    });
+    const sync = await prisma.retailTraceSync.findUnique({ where: { id: syncId } });
+    if (!sync) {
+      throw new IntegrationError(404, "SYNC_NOT_FOUND", "Synchronization record was not found");
+    }
+    return sync;
+  },
+  async markFailed(syncId, error, submissionUncertain) {
     const errorMessage =
       error instanceof IntegrationError
         ? `${error.code}: ${error.message}`
         : "RETAILTRACE_REQUEST_FAILED: RetailTrace synchronization failed";
-    await prisma.retailTraceSync.update({
-      where: { id: syncId },
-      data: { syncStatus: "FAILED", errorMessage },
-    });
+    const data = {
+        syncStatus: "FAILED",
+        submissionUncertain,
+        errorMessage,
+      } as const;
+    if (submissionUncertain) {
+      await prisma.retailTraceSync.updateMany({
+        where: { id: syncId, retailTraceRecordId: null },
+        data,
+      });
+      return;
+    }
+    await prisma.retailTraceSync.update({ where: { id: syncId }, data });
   },
 };
+
+const UNCERTAIN_SUBMISSION_MESSAGE =
+  "RetailTrace submission outcome is unknown. Retry will check for the existing record before submitting again.";
+const RECORD_MATCH_CLOCK_TOLERANCE_MS = 5_000;
+
+function isUncertainSubmissionError(error: unknown): boolean {
+  return (
+    !(error instanceof RetailTraceApiError) ||
+    error.upstreamStatus === null ||
+    error.upstreamStatus >= 500
+  );
+}
+
+function matchesRecord(
+  record: RetailTraceRecord,
+  schemaId: string,
+  data: Record<string, RetailTraceRecordValue>,
+  startedAt: Date | null,
+): boolean {
+  if (!startedAt || record.schemaId !== schemaId || !isDeepStrictEqual(record.data, data)) {
+    return false;
+  }
+  const createdAt = Date.parse(record.createdAt);
+  return (
+    Number.isFinite(createdAt) &&
+    createdAt >= startedAt.getTime() - RECORD_MATCH_CLOCK_TOLERANCE_MS
+  );
+}
+
+function validatePublicationState(record: RetailTraceRecord): void {
+  if (record.status === "CONFIRMED" && !record.transactionId) {
+    throw new RetailTraceApiError(
+      502,
+      "RETAILTRACE_TRANSACTION_ID_MISSING",
+      "RetailTrace marked a record confirmed without returning its transaction ID",
+      null,
+    );
+  }
+}
 
 export function createSyncService(
   repository: SyncRepository = prismaSyncRepository,
@@ -94,6 +203,143 @@ export function createSyncService(
     return schemaId;
   }
 
+  async function getOrderSchemaId(
+    productSchemaId: string,
+    itemCount: number,
+  ): Promise<string> {
+    const fields: RetailTraceSchemaField[] = [
+      { name: "customerName", type: "string", required: true },
+      { name: "total", type: "number", required: true },
+      { name: "status", type: "string", required: true },
+    ];
+    for (let index = 1; index <= itemCount; index += 1) {
+      fields.push(
+        {
+          name: `product${index}`,
+          type: "reference",
+          targetSchemaId: productSchemaId,
+          required: true,
+        },
+        { name: `quantity${index}`, type: "integer", required: true },
+      );
+    }
+
+    const name = itemCount === 1 ? "Order" : `Order-${itemCount}-Products`;
+    const config = await repository.getIntegrationConfig();
+    const schemas = await recordClient.listSchemas();
+    const matchingSchema = await findCompatibleSchema(
+      recordClient,
+      name,
+      fields,
+      config?.orderSchemaId ?? null,
+      schemas,
+    );
+    const schema = matchingSchema ?? await recordClient.createSchema({ name, fields });
+    await repository.updateOrderSchemaId(schema.schemaId);
+    return schema.schemaId;
+  }
+
+  async function recoverUncertainSubmission(
+    sync: RetailTraceSync,
+    schemaId: string,
+    data: Record<string, RetailTraceRecordValue>,
+  ): Promise<RetailTraceSync> {
+    try {
+      const records = await recordClient.listRecords();
+      const candidates = records.filter((record) =>
+        matchesRecord(record, schemaId, data, sync.submissionStartedAt),
+      );
+      if (candidates.length === 0) {
+        return repository.markPending(sync.id, UNCERTAIN_SUBMISSION_MESSAGE);
+      }
+      if (candidates.length > 1) {
+        const error = new IntegrationError(
+          502,
+          "AMBIGUOUS_RETAILTRACE_RECORD",
+          "Multiple RetailTrace records match this uncertain submission; no duplicate was created",
+        );
+        await repository.markFailed(sync.id, error, true);
+        throw error;
+      }
+      const record = candidates[0];
+      if (!record) {
+        return repository.markPending(sync.id, UNCERTAIN_SUBMISSION_MESSAGE);
+      }
+      validatePublicationState(record);
+      return await repository.saveRecord(sync.id, record);
+    } catch (error) {
+      if (error instanceof IntegrationError && error.code === "AMBIGUOUS_RETAILTRACE_RECORD") {
+        throw error;
+      }
+      await repository.markFailed(sync.id, error, true);
+      throw error;
+    }
+  }
+
+  async function synchronizeRecord(
+    sync: RetailTraceSync,
+    schemaId: string,
+    data: Record<string, RetailTraceRecordValue>,
+    onSubmissionStarted: () => void,
+  ): Promise<RetailTraceSync> {
+    if (sync.retailTraceRecordId) {
+      try {
+        const record = await recordClient.getRecord(sync.retailTraceRecordId);
+        validatePublicationState(record);
+        return await repository.saveRecord(sync.id, record);
+      } catch (error) {
+        await repository.markFailed(sync.id, error, false);
+        throw error;
+      }
+    }
+
+    if (sync.submissionUncertain) {
+      return recoverUncertainSubmission(sync, schemaId, data);
+    }
+
+    const startedAt = new Date();
+    const submitting = await repository.markSubmissionStarted(sync.id, startedAt);
+    if (!submitting) {
+      const current = await repository.findSync(sync.id);
+      if (!current) {
+        throw new IntegrationError(
+          404,
+          "SYNC_NOT_FOUND",
+          "Synchronization record was not found",
+        );
+      }
+      if (current.retailTraceRecordId) {
+        return synchronizeRecord(current, schemaId, data, onSubmissionStarted);
+      }
+      if (current.submissionUncertain) {
+        return recoverUncertainSubmission(current, schemaId, data);
+      }
+      throw new IntegrationError(
+        409,
+        "SYNC_IN_PROGRESS",
+        "Another synchronization attempt is already in progress",
+      );
+    }
+    onSubmissionStarted();
+    let record: RetailTraceRecord;
+    try {
+      record = await recordClient.createRecord({ schemaId, data });
+      validatePublicationState(record);
+    } catch (error) {
+      const uncertain = isUncertainSubmissionError(error);
+      await repository.markFailed(sync.id, error, uncertain);
+      if (uncertain) {
+        return recoverUncertainSubmission(
+          { ...submitting, submissionUncertain: true },
+          schemaId,
+          data,
+        );
+      }
+      throw error;
+    }
+    return repository.saveRecord(sync.id, record);
+  }
+
   async function syncSupplier(supplierId: string): Promise<RetailTraceSync> {
     const supplier = await repository.findSupplier(supplierId);
     if (!supplier) {
@@ -101,26 +347,26 @@ export function createSyncService(
     }
 
     const sync = await repository.getOrCreateSync("Supplier", supplier.id);
-    if (sync.retailTraceRecordId) {
-      return sync.syncStatus === "SYNCED"
-        ? sync
-        : repository.markSynced(sync.id, sync.retailTraceRecordId);
-    }
-
+    let submissionStarted = false;
     try {
       const schemaId = await getSchemaId("supplierSchemaId", "Supplier");
-      const record = await recordClient.createRecord({
+      return await synchronizeRecord(
+        sync,
         schemaId,
-        data: {
+        {
           name: supplier.name,
           email: supplier.email,
           country: supplier.country,
           active: supplier.active,
         },
-      });
-      return await repository.markSynced(sync.id, record.recordId, record.transactionId);
+        () => {
+          submissionStarted = true;
+        },
+      );
     } catch (error) {
-      await repository.markFailed(sync.id, error);
+      if (!sync.submissionUncertain && !submissionStarted) {
+        await repository.markFailed(sync.id, error, false);
+      }
       throw error;
     }
   }
@@ -132,12 +378,7 @@ export function createSyncService(
     }
 
     const sync = await repository.getOrCreateSync("Product", product.id);
-    if (sync.retailTraceRecordId) {
-      return sync.syncStatus === "SYNCED"
-        ? sync
-        : repository.markSynced(sync.id, sync.retailTraceRecordId);
-    }
-
+    let submissionStarted = false;
     try {
       const supplierSync = await syncSupplier(product.supplierId);
       if (!supplierSync.retailTraceRecordId) {
@@ -149,20 +390,25 @@ export function createSyncService(
       }
 
       const schemaId = await getSchemaId("productSchemaId", "Product");
-      const record = await recordClient.createRecord({
+      return await synchronizeRecord(
+        sync,
         schemaId,
-        data: {
+        {
           name: product.name,
           price: product.price.toNumber(),
           stockQuantity: product.stockQuantity,
           organic: product.organic,
-          manufacturedOn: product.manufacturedOn.toISOString().slice(0, 10),
+          manufacturedOn: product.manufacturedOn.toISOString(),
           supplierId: supplierSync.retailTraceRecordId,
         },
-      });
-      return await repository.markSynced(sync.id, record.recordId, record.transactionId);
+        () => {
+          submissionStarted = true;
+        },
+      );
     } catch (error) {
-      await repository.markFailed(sync.id, error);
+      if (!sync.submissionUncertain && !submissionStarted) {
+        await repository.markFailed(sync.id, error, false);
+      }
       throw error;
     }
   }
@@ -174,12 +420,7 @@ export function createSyncService(
     }
 
     const sync = await repository.getOrCreateSync("Order", order.id);
-    if (sync.retailTraceRecordId) {
-      return sync.syncStatus === "SYNCED"
-        ? sync
-        : repository.markSynced(sync.id, sync.retailTraceRecordId);
-    }
-
+    let submissionStarted = false;
     try {
       if (order.items.length === 0) {
         throw new IntegrationError(
@@ -188,7 +429,7 @@ export function createSyncService(
           "At least one OrderItem is required to synchronize an Order",
         );
       }
-      const productRecordIds: string[] = [];
+      const productRecords: Array<{ recordId: string; quantity: number }> = [];
       for (const item of order.items) {
         const productSync = await syncProduct(item.productId);
         if (!productSync.retailTraceRecordId) {
@@ -198,22 +439,30 @@ export function createSyncService(
             `Product '${item.productId}' has no RetailTrace record ID`,
           );
         }
-        productRecordIds.push(productSync.retailTraceRecordId);
+        productRecords.push({
+          recordId: productSync.retailTraceRecordId,
+          quantity: item.quantity,
+        });
       }
 
-      const schemaId = await getSchemaId("orderSchemaId", "Order");
-      const record = await recordClient.createRecord({
-        schemaId,
-        data: {
-          customerName: order.customerName,
-          total: order.total.toNumber(),
-          status: order.status,
-          products: productRecordIds,
-        },
+      const productSchemaId = await getSchemaId("productSchemaId", "Product");
+      const schemaId = await getOrderSchemaId(productSchemaId, productRecords.length);
+      const data: Record<string, RetailTraceRecordValue> = {
+        customerName: order.customerName,
+        total: order.total.toNumber(),
+        status: order.status,
+      };
+      for (const [index, product] of productRecords.entries()) {
+        data[`product${index + 1}`] = product.recordId;
+        data[`quantity${index + 1}`] = product.quantity;
+      }
+      return await synchronizeRecord(sync, schemaId, data, () => {
+        submissionStarted = true;
       });
-      return await repository.markSynced(sync.id, record.recordId, record.transactionId);
     } catch (error) {
-      await repository.markFailed(sync.id, error);
+      if (!sync.submissionUncertain && !submissionStarted) {
+        await repository.markFailed(sync.id, error, false);
+      }
       throw error;
     }
   }
@@ -222,12 +471,6 @@ export function createSyncService(
     const sync = await repository.findSync(syncId);
     if (!sync) {
       throw new IntegrationError(404, "SYNC_NOT_FOUND", "Synchronization record was not found");
-    }
-
-    if (sync.retailTraceRecordId) {
-      return sync.syncStatus === "SYNCED"
-        ? sync
-        : repository.markSynced(sync.id, sync.retailTraceRecordId);
     }
 
     if (sync.entityType === "Supplier") {

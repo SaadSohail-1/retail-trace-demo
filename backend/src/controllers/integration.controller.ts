@@ -61,10 +61,8 @@ export async function verifyTransaction(
     request.params.transactionId,
     "transactionId",
   );
-  const records = await retailTraceApi.listRecords();
-  const record = records.find((item) => item.transactionId === transactionId);
-
-  if (!record) {
+  const verification = await retailTraceApi.verifyTransaction(transactionId);
+  if (!verification) {
     throw new IntegrationError(
       404,
       "TRANSACTION_RECORD_NOT_FOUND",
@@ -72,8 +70,5 @@ export async function verifyTransaction(
     );
   }
 
-  response.json({
-    success: true,
-    data: await retailTraceApi.verifyRecord(record.recordId),
-  });
+  response.json({ success: true, data: verification });
 }

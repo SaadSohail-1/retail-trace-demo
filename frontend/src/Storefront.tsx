@@ -1,7 +1,53 @@
-import { useEffect, useState } from "react";
-import { Check, ShoppingBag, ShieldCheck, Sprout } from "lucide-react";
-import { api, getErrorMessage, type OrderView, type ProductView, type VerificationResult } from "./services/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, CircleAlert, LoaderCircle, ShoppingBag, ShieldCheck, Sprout, X } from "lucide-react";
+import {
+  api,
+  getErrorMessage,
+  type OrderView,
+  type ProductView,
+  type SyncResult,
+  type VerificationResult,
+} from "./services/api";
 import "./Storefront.css";
+
+function publicationStatus(sync: SyncResult | null): string {
+  if (!sync) return "Not synchronized";
+  if (sync.retailTraceStatus === "CONFIRMED") {
+    return sync.transactionId ? "Blockchain confirmed" : "Confirmation details unavailable";
+  }
+  if (sync.retailTraceStatus === "FAILED") return "Publication failed";
+  if (sync.retailTraceStatus === "PENDING") return "Awaiting blockchain confirmation";
+  if (sync.submissionUncertain) return "Publication outcome unknown";
+  if (sync.syncStatus === "FAILED") return "Publication failed";
+  if (sync.syncStatus === "PENDING" && !sync.retailTraceRecordId) {
+    return "Awaiting publication";
+  }
+  return "Blockchain status unknown";
+}
+
+function transactionDisplay(sync: SyncResult | null): string {
+  if (sync?.transactionId) return sync.transactionId;
+  if (sync?.retailTraceStatus === "PENDING") {
+    return "Awaiting blockchain confirmation";
+  }
+  if (sync?.submissionUncertain) return "Publication outcome unknown";
+  if (sync?.retailTraceStatus === "FAILED" || sync?.syncStatus === "FAILED") {
+    return "Unavailable — publication failed";
+  }
+  if (sync?.syncStatus === "PENDING") return "Awaiting publication";
+  return "Not available";
+}
+
+type Toast = {
+  id: number;
+  kind: "success" | "warning" | "error";
+  message: string;
+};
+
+type ReceiptVerification =
+  | { status: "loading" }
+  | { status: "complete"; result: VerificationResult }
+  | { status: "error"; message: string };
 
 const productImages = [
   "https://images.unsplash.com/photo-1556228578-8c89e6adf883?auto=format&fit=crop&w=900&q=80",
@@ -22,15 +68,29 @@ export default function Storefront() {
   const [selected, setSelected] = useState<ProductView | null>(null);
   const [customerName, setCustomerName] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [toast, setToast] = useState<Toast | null>(null);
   const [completed, setCompleted] = useState<OrderView | null>(null);
-  const [verification, setVerification] = useState<VerificationResult | null>(null);
+  const [verificationByOrderId, setVerificationByOrderId] = useState<
+    Record<string, ReceiptVerification>
+  >({});
+  const [verifyingOrderId, setVerifyingOrderId] = useState<string | null>(null);
   const [successTab, setSuccessTab] = useState<"receipt" | "verify">("receipt");
   const [transactionInput, setTransactionInput] = useState("");
   const [transactionVerification, setTransactionVerification] = useState<VerificationResult | null>(null);
   const [transactionVerifying, setTransactionVerifying] = useState(false);
+  const toastTimeout = useRef<number | null>(null);
 
-  async function refresh() {
+  const notify = useCallback((kind: Toast["kind"], message: string) => {
+    if (toastTimeout.current !== null) window.clearTimeout(toastTimeout.current);
+    const id = Date.now();
+    setToast({ id, kind, message });
+    toastTimeout.current = window.setTimeout(() => {
+      setToast((current) => current?.id === id ? null : current);
+      toastTimeout.current = null;
+    }, 5000);
+  }, []);
+
+  const refresh = useCallback(async () => {
     try {
       const [productResult, orderResult] = await Promise.all([
         api.getProducts(),
@@ -39,46 +99,122 @@ export default function Storefront() {
       setProducts(productResult);
       setOrders(orderResult);
     } catch (refreshError) {
-      setError(getErrorMessage(refreshError));
+      notify("error", getErrorMessage(refreshError));
     }
-  }
+  }, [notify]);
 
   useEffect(() => {
-    void refresh();
+    void Promise.resolve().then(refresh);
+  }, [refresh]);
+
+  useEffect(() => () => {
+    if (toastTimeout.current !== null) window.clearTimeout(toastTimeout.current);
   }, []);
+
+  const completedVerification = completed
+    ? verificationByOrderId[completed.order.id]
+    : undefined;
 
   async function placeOrder(event: React.FormEvent) {
     event.preventDefault();
     if (!selected || !customerName.trim()) return;
     setBusy(true);
-    setError("");
     try {
-      const order = await api.createOrder(customerName.trim(), selected.product.id);
+      const created = await api.createOrder(customerName.trim(), selected.product.id);
+      let order = created;
+      let latestStatusRefreshError = "";
+      try {
+        order = await api.getOrder(created.order.id);
+      } catch (latestError) {
+        latestStatusRefreshError = getErrorMessage(latestError);
+      }
       setCompleted(order);
       setSuccessTab("receipt");
-      setVerification(null);
       setTransactionVerification(null);
       setTransactionInput(order.synchronization?.transactionId ?? "");
       setSelected(null);
       setCustomerName("");
+      const sync = order.synchronization;
+      const refreshWarning = latestStatusRefreshError
+        ? ` Latest status refresh failed: ${latestStatusRefreshError}`
+        : "";
+      if (sync?.retailTraceStatus === "CONFIRMED") {
+        notify(
+          sync.transactionId && !latestStatusRefreshError ? "success" : "warning",
+          `Order placed.${sync.transactionId ? " Blockchain publication confirmed." : " RetailTrace reports confirmation, but the transaction ID is unavailable."}${refreshWarning}`,
+        );
+      } else if (
+        sync?.retailTraceStatus === "FAILED" ||
+        sync?.syncStatus === "FAILED"
+      ) {
+        notify(
+          "error",
+          `Order saved, but RetailTrace publication failed${sync.errorMessage ? `: ${sync.errorMessage}` : "."}${refreshWarning}`,
+        );
+      } else if (sync?.retailTraceStatus === "PENDING") {
+        notify("warning", `Order saved. Awaiting blockchain confirmation.${refreshWarning}`);
+      } else if (sync?.submissionUncertain) {
+        notify(
+          "warning",
+          `Order saved. RetailTrace submission outcome is unknown; no new submission was made.${refreshWarning}`,
+        );
+      } else if (sync?.syncStatus === "PENDING") {
+        notify("warning", `Order saved. Awaiting RetailTrace publication.${refreshWarning}`);
+      } else {
+        notify("warning", `Order saved. RetailTrace publication status is not yet confirmed.${refreshWarning}`);
+      }
       await refresh();
     } catch (orderError) {
-      setError(getErrorMessage(orderError));
+      notify("error", getErrorMessage(orderError));
     } finally {
       setBusy(false);
     }
   }
 
   async function verifyOrder(order: OrderView) {
-    const recordId = order.synchronization?.retailTraceRecordId;
-    if (!recordId) {
-      setError("This order has not been synchronized to RetailTrace yet.");
-      return;
-    }
+    const orderId = order.order.id;
+    if (verifyingOrderId !== null) return;
+    setVerifyingOrderId(orderId);
+    setVerificationByOrderId((current) => ({
+      ...current,
+      [orderId]: { status: "loading" },
+    }));
     try {
-      setVerification(await api.verify(recordId));
+      const recordId = order.synchronization?.retailTraceRecordId;
+      const transactionId = order.synchronization?.transactionId;
+      let result: VerificationResult;
+      if (recordId) {
+        result = await api.verify(recordId);
+        if (result.recordId !== recordId) {
+          throw new Error("RetailTrace returned a verification result for a different record.");
+        }
+      } else if (transactionId) {
+        result = await api.verifyByTransaction(transactionId);
+        if (result.transactionId && result.transactionId !== transactionId) {
+          throw new Error("RetailTrace returned a verification result for a different transaction.");
+        }
+      } else {
+        throw new Error("This order has no RetailTrace record or transaction ID to verify.");
+      }
+      setVerificationByOrderId((current) => ({
+        ...current,
+        [orderId]: { status: "complete", result },
+      }));
+      notify(
+        result.verified ? "success" : "warning",
+        result.verified
+          ? "RetailTrace verified this order record."
+          : "RetailTrace could not verify this order record.",
+      );
     } catch (verifyError) {
-      setError(getErrorMessage(verifyError));
+      const message = getErrorMessage(verifyError);
+      setVerificationByOrderId((current) => ({
+        ...current,
+        [orderId]: { status: "error", message },
+      }));
+      notify("error", message);
+    } finally {
+      setVerifyingOrderId((current) => current === orderId ? null : current);
     }
   }
 
@@ -86,16 +222,25 @@ export default function Storefront() {
     event.preventDefault();
     const transactionId = transactionInput.trim();
     if (!transactionId) {
-      setError("Enter a transaction ID to verify.");
+      notify("warning", "Enter a transaction ID to verify.");
       return;
     }
     setTransactionVerifying(true);
-    setError("");
     setTransactionVerification(null);
     try {
-      setTransactionVerification(await api.verifyByTransaction(transactionId));
+      const result = await api.verifyByTransaction(transactionId);
+      if (result.transactionId && result.transactionId !== transactionId) {
+        throw new Error("RetailTrace returned a verification result for a different transaction.");
+      }
+      setTransactionVerification(result);
+      notify(
+        result.verified ? "success" : "warning",
+        result.verified
+          ? "RetailTrace verified this transaction."
+          : "RetailTrace could not verify this transaction.",
+      );
     } catch (verifyError) {
-      setError(getErrorMessage(verifyError));
+      notify("error", getErrorMessage(verifyError));
     } finally {
       setTransactionVerifying(false);
     }
@@ -120,12 +265,10 @@ export default function Storefront() {
           <div>
             <p>Plant-powered essentials</p>
             <h1>Good products.<br /><em>Clear provenance.</em></h1>
-            <span>Every purchase is recorded in RetailTrace.</span>
+            <span>Orders are submitted to RetailTrace; publication status stays visible.</span>
           </div>
           <div className="hero-badge"><ShieldCheck size={21} /> Blockchain verified</div>
         </section>
-
-        {error && <div className="store-error" role="alert">{error}</div>}
 
         <section className="product-section">
           <div className="section-heading">
@@ -137,8 +280,11 @@ export default function Storefront() {
               <article className="product-card" key={item.product.id}>
                 <div className="product-image">
                   <img src={productImages[index % productImages.length]} alt={item.product.name} />
-                  {item.synchronization?.syncStatus === "SYNCED" && (
-                    <span className="trace-badge"><Check size={12} /> RetailTrace</span>
+                  {item.synchronization && (
+                    <span className="trace-badge">
+                      {item.synchronization.retailTraceStatus === "CONFIRMED" && item.synchronization.transactionId && <Check size={12} />}
+                      {publicationStatus(item.synchronization)}
+                    </span>
                   )}
                 </div>
                 <div className="product-info">
@@ -164,20 +310,64 @@ export default function Storefront() {
             <p className="no-orders">Place an order to create a local and RetailTrace record.</p>
           ) : (
             <div className="order-list">
-              {orders.map((order) => (
-                <article className="order-row" key={order.order.id}>
-                  <div>
-                    <strong>{order.order.customerName}</strong>
-                    <span>Order {order.order.id}</span>
-                  </div>
-                  <div><span>Order ID</span><code>{order.order.id}</code></div>
-                  <div><span>Transaction ID</span><code>{order.synchronization?.transactionId ?? "Pending"}</code></div>
-                  <strong>${Number(order.order.total).toFixed(2)}</strong>
-                  <button onClick={() => void verifyOrder(order)}>
-                    <ShieldCheck size={15} /> Verify
-                  </button>
-                </article>
-              ))}
+              {orders.map((order) => {
+                const receiptVerification = verificationByOrderId[order.order.id];
+                return (
+                  <article className="order-row" key={order.order.id}>
+                    <div>
+                      <strong>{order.order.customerName}</strong>
+                      <span>Order {order.order.id}</span>
+                    </div>
+                    <div><span>Order ID</span><code>{order.order.id}</code></div>
+                    <div>
+                      <span>Blockchain status</span>
+                      <code>{publicationStatus(order.synchronization)}</code>
+                    </div>
+                    <div>
+                      <span>Transaction ID</span>
+                      <code>{transactionDisplay(order.synchronization)}</code>
+                    </div>
+                    <strong>${Number(order.order.total).toFixed(2)}</strong>
+                    <button
+                      onClick={() => void verifyOrder(order)}
+                      disabled={verifyingOrderId !== null}
+                    >
+                      {verifyingOrderId === order.order.id
+                        ? <><LoaderCircle size={15} className="spin" /> Checking</>
+                        : <><ShieldCheck size={15} /> Verify</>}
+                    </button>
+                    {receiptVerification && (
+                      <div
+                        className={`receipt-verification ${receiptVerification.status === "complete" && receiptVerification.result.verified ? "is-verified" : receiptVerification.status === "error" || receiptVerification.status === "complete" ? "is-unverified" : ""}`}
+                        role={receiptVerification.status === "error" ? "alert" : "status"}
+                      >
+                        {receiptVerification.status === "loading" ? (
+                          <><LoaderCircle size={15} className="spin" /><span>Checking RetailTrace...</span></>
+                        ) : receiptVerification.status === "error" ? (
+                          <><CircleAlert size={15} /><span>{receiptVerification.message}</span></>
+                        ) : (
+                          <>
+                            {receiptVerification.result.verified
+                              ? <Check size={15} />
+                              : <CircleAlert size={15} />}
+                            <span>
+                              <strong>{receiptVerification.result.verified ? "Verified — record hash matches" : "Not verified — hash match could not be confirmed"}</strong>
+                              <small>
+                                {receiptVerification.result.verified
+                                  ? "RetailTrace confirmed the record against the blockchain."
+                                  : "The record may be missing, pending, or have a hash mismatch."}
+                              </small>
+                              <code>
+                                Transaction ID: {receiptVerification.result.transactionId ?? order.synchronization?.transactionId ?? "Not available"}
+                              </code>
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
@@ -198,12 +388,31 @@ export default function Storefront() {
         </div>
       )}
 
+      {toast && (
+        <div
+          key={toast.id}
+          className={`store-toast toast-${toast.kind}`}
+          role={toast.kind === "error" ? "alert" : "status"}
+          aria-live={toast.kind === "error" ? "assertive" : "polite"}
+        >
+          {toast.kind === "success" ? <Check size={17} /> : <CircleAlert size={17} />}
+          <span>{toast.message}</span>
+          <button type="button" onClick={() => setToast(null)} aria-label="Dismiss notification">
+            <X size={15} />
+          </button>
+        </div>
+      )}
+
       {completed && (
         <div className="order-modal-backdrop" role="presentation" onMouseDown={() => setCompleted(null)}>
           <div className="order-modal success-modal" onMouseDown={(event) => event.stopPropagation()}>
             <span className="success-icon"><Check size={24} /></span>
-            <p>ORDER CONFIRMED</p>
+            <p>ORDER SAVED</p>
             <h2>Thank you, {completed.order.customerName}</h2>
+            <label>
+              RetailTrace status
+              <code>{publicationStatus(completed.synchronization)}</code>
+            </label>
             <div className="success-tabs" role="tablist" aria-label="Order confirmation options">
               <button
                 type="button"
@@ -228,8 +437,18 @@ export default function Storefront() {
             {successTab === "receipt" ? (
               <>
                 <label>Order ID<code>{completed.order.id}</code></label>
-                <label>Transaction ID<code>{completed.synchronization?.transactionId ?? "Sync pending"}</code></label>
-                {verification && <label>Blockchain<code>{verification.verified ? "Verified" : "Not verified"}</code></label>}
+                <label>Transaction ID<code>{transactionDisplay(completed.synchronization)}</code></label>
+                {completedVerification?.status === "complete" && (
+                  <>
+                    <label>Blockchain verification<code>{completedVerification.result.verified ? "Verified — record hash matches" : "Not verified — hash match could not be confirmed"}</code></label>
+                    <label>Verified transaction<code>{completedVerification.result.transactionId ?? completed.synchronization?.transactionId ?? "Not available"}</code></label>
+                  </>
+                )}
+                {completedVerification?.status === "error" && (
+                  <div className="receipt-verification is-unverified" role="alert">
+                    <CircleAlert size={15} /><span>{completedVerification.message}</span>
+                  </div>
+                )}
                 <button type="button" onClick={() => setSuccessTab("verify")}>Verify on blockchain</button>
               </>
             ) : (
@@ -252,6 +471,8 @@ export default function Storefront() {
                     <ShieldCheck size={18} />
                     <div>
                       <strong>{transactionVerification.verified ? "Transaction verified" : "Transaction not verified"}</strong>
+                      <span>{transactionVerification.verified ? "Record hash matches the blockchain commitment." : "Hash match could not be confirmed; the record may be missing, pending, or mismatched."}</span>
+                      <code>Record ID: {transactionVerification.recordId}</code>
                       <code>{transactionVerification.transactionId ?? transactionInput}</code>
                     </div>
                   </div>

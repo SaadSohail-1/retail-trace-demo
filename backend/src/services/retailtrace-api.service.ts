@@ -1,11 +1,10 @@
-import axios, { type AxiosError } from "axios";
+import axios, {
+  type AxiosError,
+  type AxiosInstance,
+  type AxiosResponse,
+} from "axios";
 import { env } from "../config/env.js";
-import { RetailTraceApiError } from "./integration-errors.js";
-
-interface ApiEnvelope<T> {
-  success: boolean;
-  data: T;
-}
+import { IntegrationError, RetailTraceApiError } from "./integration-errors.js";
 
 export interface RetailTraceSchemaField {
   name: string;
@@ -15,7 +14,7 @@ export interface RetailTraceSchemaField {
   multiple?: boolean;
 }
 
-export type RetailTraceRecordValue = string | number | boolean | string[];
+export type RetailTraceRecordValue = string | number | boolean;
 
 export interface RetailTraceSchemaSummary {
   schemaId: string;
@@ -59,15 +58,15 @@ const client = axios.create({
   },
 });
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function fromAxiosError(error: AxiosError<unknown>): RetailTraceApiError {
   const upstreamStatus = error.response?.status ?? null;
   const responseBody = error.response?.data;
   const responseError =
-    isRecord(responseBody) && isRecord(responseBody.error) ? responseBody.error : undefined;
+    isObject(responseBody) && isObject(responseBody.error) ? responseBody.error : undefined;
   const upstreamCode =
     responseError && typeof responseError.code === "string" ? responseError.code : undefined;
   const upstreamMessage =
@@ -93,82 +92,191 @@ function fromAxiosError(error: AxiosError<unknown>): RetailTraceApiError {
   );
 }
 
-client.interceptors.response.use(
-  (response) => {
-    if (isRecord(response.data) && response.data.success === false) {
-      const bodyError = isRecord(response.data.error) ? response.data.error : undefined;
-      const code = bodyError && typeof bodyError.code === "string" ? bodyError.code : undefined;
-      const message =
-        bodyError && typeof bodyError.message === "string"
-          ? bodyError.message
-          : "RetailTrace reported an unsuccessful response";
-      throw new RetailTraceApiError(502, code ?? "RETAILTRACE_REQUEST_FAILED", message, response.status);
-    }
+function invalidResponse(): RetailTraceApiError {
+  return new RetailTraceApiError(
+    502,
+    "RETAILTRACE_INVALID_RESPONSE",
+    "RetailTrace returned an unexpected response",
+    null,
+  );
+}
 
-    return response;
-  },
-  (error: unknown) => {
+async function requestData<T>(
+  request: Promise<AxiosResponse<unknown>>,
+  validate: (value: unknown) => value is T,
+): Promise<T> {
+  try {
+    const response = await request;
+    const body = response.data;
+    if (!isObject(body)) {
+      throw invalidResponse();
+    }
+    if (body.success === false) {
+      const error = isObject(body.error) ? body.error : undefined;
+      throw new RetailTraceApiError(
+        502,
+        typeof error?.code === "string" ? error.code : "RETAILTRACE_REQUEST_FAILED",
+        typeof error?.message === "string"
+          ? error.message
+          : "RetailTrace reported an unsuccessful response",
+        response.status,
+      );
+    }
+    if (body.success !== true || !validate(body.data)) {
+      throw invalidResponse();
+    }
+    return body.data;
+  } catch (error) {
+    if (error instanceof IntegrationError) {
+      throw error;
+    }
     if (axios.isAxiosError(error)) {
       throw fromAxiosError(error);
     }
     throw error;
-  },
-);
+  }
+}
 
-export const retailTraceApi = {
-  async checkHealth(): Promise<RetailTraceBlockchainHealth> {
-    const response = await client.get<ApiEnvelope<RetailTraceBlockchainHealth>>(
-      "/health/blockchain",
-    );
-    return response.data.data;
-  },
+function isRecordSummary(value: unknown): value is RetailTraceSchemaSummary {
+  return (
+    isObject(value) &&
+    typeof value.schemaId === "string" &&
+    typeof value.name === "string" &&
+    typeof value.version === "number"
+  );
+}
 
-  async listSchemas(): Promise<RetailTraceSchemaSummary[]> {
-    const response = await client.get<ApiEnvelope<RetailTraceSchemaSummary[]>>("/schemas");
-    return response.data.data;
-  },
+function isSchema(value: unknown): value is RetailTraceSchema {
+  return (
+    isObject(value) &&
+    isRecordSummary(value) &&
+    Array.isArray(value.fields) &&
+    value.fields.every(isSchemaField) &&
+    isObject(value.schema)
+  );
+}
 
-  async getSchema(schemaId: string): Promise<RetailTraceSchema> {
-    const response = await client.get<ApiEnvelope<RetailTraceSchema>>(`/schemas/${schemaId}`);
-    return response.data.data;
-  },
+function isSchemaField(value: unknown): value is RetailTraceSchemaField {
+  return (
+    isObject(value) &&
+    typeof value.name === "string" &&
+    (value.type === "string" ||
+      value.type === "number" ||
+      value.type === "integer" ||
+      value.type === "boolean" ||
+      value.type === "date" ||
+      value.type === "reference") &&
+    typeof value.required === "boolean" &&
+    (value.multiple === undefined || typeof value.multiple === "boolean") &&
+    (value.type !== "reference" || typeof value.targetSchemaId === "string")
+  );
+}
 
-  async createSchema(input: {
-    name: string;
-    fields: RetailTraceSchemaField[];
-  }): Promise<RetailTraceSchemaSummary> {
-    const response = await client.post<ApiEnvelope<RetailTraceSchemaSummary>>("/schemas", input);
-    return response.data.data;
-  },
+function isRetailTraceRecord(value: unknown): value is RetailTraceRecord {
+  return (
+    isObject(value) &&
+    typeof value.recordId === "string" &&
+    typeof value.businessId === "string" &&
+    typeof value.schemaId === "string" &&
+    isObject(value.data) &&
+    (value.transactionId === null || typeof value.transactionId === "string") &&
+    (value.status === "PENDING" || value.status === "CONFIRMED" || value.status === "FAILED") &&
+    typeof value.createdAt === "string"
+  );
+}
 
-  async updateSchema(
-    schemaId: string,
-    input: { name: string; fields: RetailTraceSchemaField[] },
-  ): Promise<RetailTraceSchemaSummary> {
-    const response = await client.put<ApiEnvelope<RetailTraceSchemaSummary>>(
-      `/schemas/${schemaId}`,
-      input,
-    );
-    return response.data.data;
-  },
+function isVerification(value: unknown): value is RetailTraceVerification {
+  return (
+    isObject(value) &&
+    typeof value.recordId === "string" &&
+    typeof value.verified === "boolean" &&
+    (value.transactionId === null || typeof value.transactionId === "string")
+  );
+}
 
-  async listRecords(): Promise<RetailTraceRecord[]> {
-    const response = await client.get<ApiEnvelope<RetailTraceRecord[]>>("/records");
-    return response.data.data;
-  },
+function isHealth(value: unknown): value is RetailTraceBlockchainHealth {
+  return (
+    isObject(value) &&
+    (value.status === "connected" || value.status === "unavailable" || value.status === "unknown") &&
+    typeof value.checkedAt === "string"
+  );
+}
 
-  async createRecord(input: {
-    schemaId: string;
-    data: Record<string, RetailTraceRecordValue>;
-  }): Promise<RetailTraceRecord> {
-    const response = await client.post<ApiEnvelope<RetailTraceRecord>>("/records", input);
-    return response.data.data;
-  },
+export function createRetailTraceApi(http: AxiosInstance = client) {
+  return {
+    async checkHealth(): Promise<RetailTraceBlockchainHealth> {
+      return requestData(http.get("/health/blockchain"), isHealth);
+    },
 
-  async verifyRecord(recordId: string): Promise<RetailTraceVerification> {
-    const response = await client.get<ApiEnvelope<RetailTraceVerification>>(
-      `/records/${recordId}/verify`,
-    );
-    return response.data.data;
-  },
-};
+    async listSchemas(): Promise<RetailTraceSchemaSummary[]> {
+      return requestData(
+        http.get("/schemas"),
+        (value): value is RetailTraceSchemaSummary[] =>
+          Array.isArray(value) && value.every(isRecordSummary),
+      );
+    },
+
+    async getSchema(schemaId: string): Promise<RetailTraceSchema> {
+      return requestData(http.get(`/schemas/${encodeURIComponent(schemaId)}`), isSchema);
+    },
+
+    async createSchema(input: {
+      name: string;
+      fields: RetailTraceSchemaField[];
+    }): Promise<RetailTraceSchemaSummary> {
+      return requestData(http.post("/schemas", input), isRecordSummary);
+    },
+
+    async listRecords(): Promise<RetailTraceRecord[]> {
+      return requestData(
+        http.get("/records"),
+        (value): value is RetailTraceRecord[] =>
+          Array.isArray(value) && value.every(isRetailTraceRecord),
+      );
+    },
+
+    async getRecord(recordId: string): Promise<RetailTraceRecord> {
+      return requestData(
+        http.get(`/records/${encodeURIComponent(recordId)}`),
+        isRetailTraceRecord,
+      );
+    },
+
+    async createRecord(input: {
+      schemaId: string;
+      data: Record<string, RetailTraceRecordValue>;
+    }): Promise<RetailTraceRecord> {
+      const record = await requestData(
+        http.post("/records", input),
+        isRetailTraceRecord,
+      );
+      if (record.status === "CONFIRMED" && !record.transactionId) {
+        throw invalidResponse();
+      }
+      return record;
+    },
+
+    async verifyRecord(recordId: string): Promise<RetailTraceVerification> {
+      return requestData(
+        http.get(`/records/${encodeURIComponent(recordId)}/verify`),
+        isVerification,
+      );
+    },
+
+    async verifyTransaction(transactionId: string): Promise<RetailTraceVerification | null> {
+      const records = await this.listRecords();
+      const record = records.find((item) => item.transactionId === transactionId);
+      if (!record) {
+        return null;
+      }
+      const verification = await this.verifyRecord(record.recordId);
+      return {
+        ...verification,
+        verified:
+          verification.verified && verification.transactionId === transactionId,
+      };
+    },
+  };
+}
+
+export const retailTraceApi = createRetailTraceApi();

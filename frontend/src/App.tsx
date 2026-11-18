@@ -24,6 +24,9 @@ import {
   type RetailTraceRecord,
   type SchemaSummary,
   type SyncResult,
+  type SupplierView,
+  type ProductView,
+  type OrderView,
   type VerificationResult,
 } from './services/api'
 import './App.css'
@@ -34,6 +37,38 @@ type Notice = {
 }
 
 type VerificationState = VerificationResult | { error: string }
+
+type BusinessSyncRow = {
+  key: string
+  label: string
+  entityType: string
+  synchronization: SyncResult | null
+}
+
+function synchronizationLabel(sync: SyncResult | null): {
+  label: string
+  tone: 'confirmed' | 'failed' | 'pending' | 'unknown'
+} {
+  if (!sync) return { label: 'Not synchronized', tone: 'unknown' }
+  if (sync.retailTraceStatus === 'CONFIRMED') {
+    return sync.transactionId
+      ? { label: 'Blockchain confirmed', tone: 'confirmed' }
+      : { label: 'Confirmation details missing', tone: 'unknown' }
+  }
+  if (sync.retailTraceStatus === 'FAILED') {
+    return { label: 'Publication failed', tone: 'failed' }
+  }
+  if (sync.retailTraceStatus === 'PENDING') {
+    return { label: 'Awaiting blockchain confirmation', tone: 'pending' }
+  }
+  if (sync.submissionUncertain) {
+    return { label: 'Publication outcome unknown', tone: 'unknown' }
+  }
+  if (sync.syncStatus === 'FAILED') return { label: 'Synchronization failed', tone: 'failed' }
+  if (sync.retailTraceRecordId) return { label: 'Blockchain status unknown', tone: 'unknown' }
+  if (sync.syncStatus === 'PENDING') return { label: 'Awaiting submission', tone: 'pending' }
+  return { label: 'RetailTrace record ID unavailable', tone: 'unknown' }
+}
 
 function formatDate(value: string): string {
   const date = new Date(value)
@@ -60,12 +95,12 @@ export function AdminDashboard() {
   const [health, setHealth] = useState<BlockchainHealth | null>(null)
   const [schemas, setSchemas] = useState<SchemaSummary[]>([])
   const [records, setRecords] = useState<RetailTraceRecord[]>([])
+  const [businessSyncRows, setBusinessSyncRows] = useState<BusinessSyncRow[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshError, setRefreshError] = useState('')
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
-  const [busyAction, setBusyAction] = useState<'initialize' | 'sync' | 'retry' | null>(null)
+  const [busyAction, setBusyAction] = useState<'initialize' | 'sync' | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
-  const [retrySyncId, setRetrySyncId] = useState('')
   const [recordSearch, setRecordSearch] = useState('')
   const [verifyingId, setVerifyingId] = useState<string | null>(null)
   const [verificationById, setVerificationById] = useState<
@@ -81,10 +116,21 @@ export function AdminDashboard() {
       api.getHealth(),
       api.getSchemas(),
       api.getRecords(),
+      api.getSuppliers(),
+      api.getProducts(),
+      api.getOrders(),
     ])
     const failures: string[] = []
 
-    const [statusResult, healthResult, schemaResult, recordResult] = results
+    const [
+      statusResult,
+      healthResult,
+      schemaResult,
+      recordResult,
+      supplierResult,
+      productResult,
+      orderResult,
+    ] = results
     if (statusResult.status === 'fulfilled') setStatus(statusResult.value)
     else failures.push(`Status: ${getErrorMessage(statusResult.reason)}`)
 
@@ -96,6 +142,42 @@ export function AdminDashboard() {
 
     if (recordResult.status === 'fulfilled') setRecords(recordResult.value)
     else failures.push(`Records: ${getErrorMessage(recordResult.reason)}`)
+
+    const suppliers: SupplierView[] =
+      supplierResult.status === 'fulfilled' ? supplierResult.value : []
+    const products: ProductView[] =
+      productResult.status === 'fulfilled' ? productResult.value : []
+    const orders: OrderView[] =
+      orderResult.status === 'fulfilled' ? orderResult.value : []
+    setBusinessSyncRows([
+      ...suppliers.map(({ supplier, synchronization }) => ({
+        key: `Supplier:${supplier.id}`,
+        label: supplier.name,
+        entityType: 'Supplier',
+        synchronization,
+      })),
+      ...products.map(({ product, synchronization }) => ({
+        key: `Product:${product.id}`,
+        label: product.name,
+        entityType: 'Product',
+        synchronization,
+      })),
+      ...orders.map(({ order, synchronization }) => ({
+        key: `Order:${order.id}`,
+        label: `Order ${shortId(order.id)}`,
+        entityType: 'Order',
+        synchronization,
+      })),
+    ])
+    if (supplierResult.status === 'rejected') {
+      failures.push(`Supplier sync details: ${getErrorMessage(supplierResult.reason)}`)
+    }
+    if (productResult.status === 'rejected') {
+      failures.push(`Product sync details: ${getErrorMessage(productResult.reason)}`)
+    }
+    if (orderResult.status === 'rejected') {
+      failures.push(`Order sync details: ${getErrorMessage(orderResult.reason)}`)
+    }
 
     setRefreshError(failures.join(' · '))
     setLastUpdated(new Date())
@@ -147,42 +229,23 @@ export function AdminDashboard() {
     setNotice(null)
     try {
       const result = await api.syncAll()
-      const failed =
-        [...result.suppliers, ...result.products, ...result.orders].filter(
-          (sync) => sync.syncStatus === 'FAILED',
-        ).length
+      const synchronized = [...result.suppliers, ...result.products, ...result.orders]
+      const failed = synchronized.filter(
+        (sync) => sync.syncStatus === 'FAILED' || sync.retailTraceStatus === 'FAILED',
+      ).length
+      const pending = synchronized.filter(
+        (sync) =>
+          !sync.submissionUncertain &&
+          (sync.syncStatus === 'PENDING' || sync.retailTraceStatus === 'PENDING'),
+      ).length
+      const uncertain = synchronized.filter((sync) => sync.submissionUncertain).length
       setNotice({
-        kind: failed ? 'warning' : 'success',
+        kind: failed || pending || uncertain ? 'warning' : 'success',
         message: failed
-          ? `${failed} records still need attention.`
-          : 'Suppliers, products, and orders are synced to RetailTrace.',
-      })
-      await refresh()
-    } catch (error) {
-      setNotice({ kind: 'error', message: getErrorMessage(error) })
-    } finally {
-      setBusyAction(null)
-    }
-  }
-
-  async function handleRetry(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const syncId = retrySyncId.trim()
-    if (!syncId) {
-      setNotice({ kind: 'warning', message: 'Enter a local synchronization ID to retry.' })
-      return
-    }
-
-    setBusyAction('retry')
-    setNotice(null)
-    try {
-      const result: SyncResult = await api.retry(syncId)
-      setNotice({
-        kind: result.syncStatus === 'SYNCED' ? 'success' : 'warning',
-        message:
-          result.syncStatus === 'SYNCED'
-            ? `${result.entityType} is synced${result.retailTraceRecordId ? ` as ${shortId(result.retailTraceRecordId)}` : ''}.`
-            : `${result.entityType} retry status: ${result.syncStatus}${result.errorMessage ? ` — ${result.errorMessage}` : ''}`,
+          ? `${failed} records need attention${pending ? `; ${pending} are still pending synchronization or publication` : ''}${uncertain ? `; ${uncertain} have an unknown submission outcome` : ''}.`
+          : pending || uncertain
+            ? `${pending} records are pending synchronization or publication${uncertain ? `; ${uncertain} have an unknown submission outcome` : ''}.`
+            : 'Suppliers, products, and orders are synced to RetailTrace.',
       })
       await refresh()
     } catch (error) {
@@ -304,13 +367,14 @@ export function AdminDashboard() {
                 className="button button-secondary"
                 onClick={() => void handleSyncAll()}
                 disabled={busyAction !== null}
+                title="Reconcile existing records and submit records that have not been synchronized"
               >
                 {busyAction === 'sync' ? (
                   <LoaderCircle size={17} className="spin" />
                 ) : (
                   <RefreshCw size={17} />
                 )}
-                Sync all records
+                Sync and reconcile
               </button>
               <button
                 className="button button-primary"
@@ -368,13 +432,13 @@ export function AdminDashboard() {
 
             <article className="metric-card">
               <div className="metric-topline">
-                <span>Synced records</span>
+                <span>RetailTrace records</span>
                 <span className="metric-icon metric-icon-neutral"><Database size={18} /></span>
               </div>
-              <div className="metric-value">{loading && !status ? '—' : status?.synchronization.synced ?? 0}</div>
+              <div className="metric-value">{loading && records.length === 0 ? '—' : records.length}</div>
               <div className="metric-foot">
                 <span className="mini-dot green" />
-                {status?.synchronization.failed ?? 0} failed · {status?.synchronization.pending ?? 0} pending
+                {status?.synchronization.failed ?? 0} sync failures · {status?.synchronization.pending ?? 0} pending syncs
               </div>
             </article>
 
@@ -415,11 +479,11 @@ export function AdminDashboard() {
                 <span className="step-state">{status?.schemas.productSchemaId ? 'Registered' : 'Waiting'}</span>
               </div>
               <ArrowRight className="journey-arrow" size={18} />
-              <div className="journey-step journey-pending">
+              <div className="journey-step">
                 <span className="journey-number">03</span>
                 <span className="journey-icon"><FileStack size={19} /></span>
-                <div><strong>Order</strong><small>Multi-item design needed</small></div>
-                <span className="step-state pending-state">Pending design</span>
+                <div><strong>Order</strong><small>One RetailTrace reference per item</small></div>
+                <span className="step-state">{status?.schemas.orderSchemaId ? 'Registered' : 'Waiting'}</span>
               </div>
             </div>
           </section>
@@ -466,39 +530,94 @@ export function AdminDashboard() {
               <div className="panel-header">
                 <div>
                   <div className="eyebrow muted-eyebrow">RECOVERY</div>
-                  <h2>Retry a sync</h2>
+                  <h2>Sync recovery</h2>
                 </div>
                 <span className="retry-icon"><RefreshCw size={18} /></span>
               </div>
               <p className="panel-description">
-                Retry a failed Supplier or Product submission using its local sync ID.
+                Use “Sync and reconcile” to refresh stored mappings and retry eligible records.
+                Existing RetailTrace record IDs are reused to avoid duplicate submissions.
               </p>
-              <form className="retry-form" onSubmit={(event) => void handleRetry(event)}>
-                <label htmlFor="sync-id">Synchronization ID</label>
-                <div className="input-action">
-                  <input
-                    id="sync-id"
-                    value={retrySyncId}
-                    onChange={(event) => setRetrySyncId(event.target.value)}
-                    placeholder="Paste a RetailTraceSync ID"
-                    autoComplete="off"
-                  />
-                  <button
-                    className="button button-dark"
-                    type="submit"
-                    disabled={busyAction !== null}
-                    aria-label="Retry synchronization"
-                  >
-                    {busyAction === 'retry' ? <LoaderCircle size={17} className="spin" /> : <RefreshCw size={17} />}
-                  </button>
-                </div>
-              </form>
               <div className="retry-help">
                 <CircleAlert size={15} />
-                <span>Find failed sync IDs in the PostgreSQL <code>RetailTraceSync</code> table.</span>
+                <span>No internal Sync ID is needed. Publication state, upstream IDs, timestamps, and errors are listed below.</span>
               </div>
             </section>
           </div>
+
+          <section className="panel records-panel sync-details-panel">
+            <div className="panel-header">
+              <div>
+                <div className="eyebrow muted-eyebrow">VERDANT MAPPINGS</div>
+                <h2>Record synchronization</h2>
+              </div>
+              <span className="count-badge">{businessSyncRows.length} records</span>
+            </div>
+            <p className="panel-description">
+              Local supplier, product, and order records with their RetailTrace publication state.
+              A transaction ID is shown only when RetailTrace returned one.
+            </p>
+            <div className="records-table-wrap">
+              <table className="records-table sync-table">
+                <thead>
+                  <tr>
+                    <th>Verdant record</th>
+                    <th>Publication status</th>
+                    <th>RetailTrace record ID</th>
+                    <th>Blockchain transaction ID</th>
+                    <th>Last sync</th>
+                    <th>Error details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {businessSyncRows.map((row) => {
+                    const sync = row.synchronization
+                    const statusView = synchronizationLabel(sync)
+                    return (
+                      <tr key={row.key}>
+                        <td>
+                          <div className="record-name">{row.label}</div>
+                          <span className="schema-name">{row.entityType}</span>
+                        </td>
+                        <td>
+                          <span className={`sync-status sync-status-${statusView.tone}`}>
+                            {statusView.label}
+                          </span>
+                        </td>
+                        <td>
+                          {sync?.retailTraceRecordId
+                            ? <code className="record-id" title={sync.retailTraceRecordId}>{shortId(sync.retailTraceRecordId)}</code>
+                            : <span className="record-id">Not available</span>}
+                        </td>
+                        <td>
+                          {sync?.transactionId
+                            ? <code className="record-id" title={sync.transactionId}>{shortId(sync.transactionId)}</code>
+                            : <span className="record-id">Not available</span>}
+                        </td>
+                        <td className="record-date">
+                          {sync ? formatDate(sync.updatedAt) : 'Not synced'}
+                        </td>
+                        <td className="sync-error" title={sync?.errorMessage ?? undefined}>
+                          {sync?.errorMessage ?? '—'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {businessSyncRows.length === 0 && (
+                    <tr>
+                      <td colSpan={6}>
+                        <div className="empty-table">
+                          {loading
+                            ? 'Loading Verdant synchronization details…'
+                            : 'No local supplier, product, or order records are available.'}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
 
           <section className="panel records-panel" id="records">
             <div className="panel-header records-header">
@@ -527,6 +646,7 @@ export function AdminDashboard() {
                     <th>Record</th>
                     <th>Schema</th>
                     <th>RetailTrace status</th>
+                    <th>Transaction ID</th>
                     <th>Published</th>
                     <th>Verification</th>
                   </tr>
@@ -548,6 +668,11 @@ export function AdminDashboard() {
                             <span />
                             {record.status}
                           </span>
+                        </td>
+                        <td>
+                          {record.transactionId
+                            ? <code className="record-id" title={record.transactionId}>{shortId(record.transactionId)}</code>
+                            : <span className="record-id">Not available</span>}
                         </td>
                         <td className="record-date">{formatDate(record.createdAt)}</td>
                         <td>
@@ -578,7 +703,7 @@ export function AdminDashboard() {
                   })}
                   {visibleRecords.length === 0 && (
                     <tr>
-                      <td colSpan={5}>
+                      <td colSpan={6}>
                         <div className="empty-table">
                           {records.length === 0
                             ? 'No RetailTrace records are available yet.'

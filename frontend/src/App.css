@@ -367,18 +367,6 @@
   color: #536b4d;
 }
 
-.button-dark {
-  width: 42px;
-  min-height: 39px;
-  padding: 0;
-  background: var(--forest);
-  color: #fff;
-}
-
-.button-dark:hover:not(:disabled) {
-  background: #244d37;
-}
-
 .notice {
   display: flex;
   align-items: center;
@@ -738,20 +726,6 @@
   color: #71846c;
 }
 
-.retry-form label {
-  display: block;
-  margin-bottom: 7px;
-  color: #657269;
-  font-size: 10px;
-  font-weight: 650;
-}
-
-.input-action {
-  display: flex;
-  gap: 7px;
-}
-
-.input-action input,
 .search-box input {
   min-width: 0;
   border: 0;
@@ -759,24 +733,6 @@
   background: transparent;
   color: #35463b;
   font: inherit;
-}
-
-.input-action input {
-  flex: 1;
-  height: 39px;
-  padding: 0 10px;
-  border: 1px solid #e1e6de;
-  border-radius: 7px;
-  font-size: 11px;
-}
-
-.input-action input:focus {
-  border-color: #91a987;
-  box-shadow: 0 0 0 3px rgba(121, 156, 100, 0.12);
-}
-
-.input-action input::placeholder {
-  color: #a6aea7;
 }
 
 .retry-help {
@@ -798,6 +754,62 @@
 .retry-help code {
   color: #53694c;
   font-size: inherit;
+}
+
+.sync-details-panel {
+  margin-bottom: 16px;
+}
+
+.sync-table {
+  white-space: normal;
+}
+
+.sync-table td {
+  vertical-align: top;
+}
+
+.sync-table .record-id {
+  max-width: 165px;
+  overflow-wrap: anywhere;
+}
+
+.sync-status {
+  display: inline-block;
+  padding: 4px 7px;
+  border: 1px solid #e6e9e1;
+  border-radius: 999px;
+  background: #f7f8f4;
+  color: #78827a;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.sync-status-confirmed {
+  border-color: #dce8d5;
+  background: #f3f8f0;
+  color: #5b7a4d;
+}
+
+.sync-status-failed {
+  border-color: #efd8d0;
+  background: #fff6f3;
+  color: #995a4e;
+}
+
+.sync-status-pending {
+  border-color: #eadfbd;
+  background: #fbf8eb;
+  color: #806b35;
+}
+
+.sync-error {
+  min-width: 160px;
+  max-width: 280px;
+  color: #995a4e !important;
+  font-size: 9px !important;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .records-panel {

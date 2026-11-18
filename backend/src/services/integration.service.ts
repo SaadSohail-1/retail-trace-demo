@@ -1,12 +1,12 @@
 import { prisma } from "../config/database.js";
 import type { RetailTraceSync } from "../generated/prisma/client.js";
-import { IntegrationError, RetailTraceApiError } from "./integration-errors.js";
+import { IntegrationError } from "./integration-errors.js";
 import {
   retailTraceApi,
-  type RetailTraceSchema,
   type RetailTraceSchemaField,
   type RetailTraceSchemaSummary,
 } from "./retailtrace-api.service.js";
+import { findCompatibleSchema } from "./schema-compatibility.service.js";
 import { syncOrder, syncProduct, syncSupplier } from "./sync.service.js";
 
 type SchemaKey = "supplierSchemaId" | "productSchemaId" | "orderSchemaId";
@@ -54,103 +54,25 @@ const schemaDefinitions: SchemaDefinition[] = [
       { name: "total", type: "number", required: true },
       { name: "status", type: "string", required: true },
       {
-        name: "products",
+        name: "product1",
         type: "reference",
         targetSchemaId: productSchemaId ?? "",
-        multiple: true,
+        required: true,
+      },
+      {
+        name: "quantity1",
+        type: "integer",
         required: true,
       },
     ],
   },
 ];
 
-function fieldsMatch(
-  actual: RetailTraceSchemaField[],
-  expected: RetailTraceSchemaField[],
-): boolean {
-  if (actual.length !== expected.length) {
-    return false;
-  }
-
-  return expected.every((field) => {
-    const candidate = actual.find((item) => item.name === field.name);
-    return (
-      candidate?.type === field.type &&
-      candidate.required === field.required &&
-      (field.type !== "reference" ||
-        (candidate.targetSchemaId === field.targetSchemaId &&
-          (candidate.multiple ?? false) === (field.multiple ?? false)))
-    );
-  });
-}
-
 function getErrorDetails(error: unknown): { code: string; message: string } {
   if (error instanceof IntegrationError) {
     return { code: error.code, message: error.message };
   }
   return { code: "INTEGRATION_INITIALIZATION_FAILED", message: "Integration initialization failed" };
-}
-
-async function findMatchingSchema(
-  name: SchemaName,
-  fields: RetailTraceSchemaField[],
-  savedSchemaId: string | null,
-  existingSchemas: RetailTraceSchemaSummary[],
-): Promise<{
-  matchingSchema?: RetailTraceSchemaSummary;
-  schemaToUpdate?: RetailTraceSchemaSummary;
-}> {
-  const namedSchemas = existingSchemas
-    .filter((schema) => schema.name === name)
-    .sort((left, right) => right.version - left.version);
-  const details = new Map<string, RetailTraceSchema>();
-
-  const readSchema = async (schemaId: string): Promise<RetailTraceSchema | undefined> => {
-    if (details.has(schemaId)) {
-      return details.get(schemaId);
-    }
-
-    try {
-      const schema = await retailTraceApi.getSchema(schemaId);
-      details.set(schemaId, schema);
-      return schema;
-    } catch (error) {
-      if (error instanceof RetailTraceApiError && error.upstreamStatus === 404) {
-        return undefined;
-      }
-      throw error;
-    }
-  };
-
-  if (savedSchemaId) {
-    const savedSchema = await readSchema(savedSchemaId);
-    if (
-      savedSchema?.name === name &&
-      fieldsMatch(savedSchema.fields, fields)
-    ) {
-      return {
-        matchingSchema: {
-          schemaId: savedSchema.schemaId,
-          name: savedSchema.name,
-          version: savedSchema.version,
-        },
-      };
-    }
-  }
-
-  for (const candidate of namedSchemas) {
-    const schema = await readSchema(candidate.schemaId);
-    if (schema?.name === name && fieldsMatch(schema.fields, fields)) {
-      return { matchingSchema: candidate };
-    }
-  }
-
-  const latestSchema = namedSchemas.at(0);
-  if (latestSchema) {
-    return { schemaToUpdate: latestSchema };
-  }
-
-  return {};
 }
 
 async function ensureIntegrationConfig() {
@@ -198,23 +120,17 @@ export async function initializeIntegration() {
           : definition.key === "productSchemaId"
             ? productSchemaId
             : orderSchemaId;
-      const { matchingSchema, schemaToUpdate } = await findMatchingSchema(
+      const matchingSchema = await findCompatibleSchema(
+        retailTraceApi,
         definition.name,
         fields,
         savedSchemaId,
         existingSchemas,
       );
-      const schema = matchingSchema
-        ? matchingSchema
-        : schemaToUpdate
-          ? await retailTraceApi.updateSchema(schemaToUpdate.schemaId, {
-              name: definition.name,
-              fields,
-            })
-          : await retailTraceApi.createSchema({
-              name: definition.name,
-              fields,
-            });
+      const schema = matchingSchema ?? await retailTraceApi.createSchema({
+        name: definition.name,
+        fields,
+      });
 
       switch (definition.key) {
         case "supplierSchemaId":

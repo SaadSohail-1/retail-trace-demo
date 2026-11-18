@@ -5,36 +5,33 @@ business can keep its own e-commerce data while using the separate RetailTrace
 Business-as-a-Service (BaaS) application for traceability records and
 blockchain-backed verification.
 
-The project is being built in stages. Its React frontend is an integration
-dashboard for the existing business backend; it is not yet a full storefront.
-The backend and the dashboard communicate through Verdant Store's Express API.
+The project includes a React storefront and integration dashboard. The frontend
+communicates with Verdant Store's Express API; RetailTrace credentials remain
+on the server.
 
 ## Project status
 
 | Area | Status |
 |---|---|
-| React + TypeScript + Vite integration dashboard | Implemented and browser-checked; product, cart, and checkout flows are not implemented |
+| React + TypeScript + Vite storefront and integration dashboard | Implemented |
 | Express backend and health endpoint | Implemented and tested |
 | PostgreSQL Docker Compose service | Implemented and tested |
 | Prisma models, initial migration, and seed data | Implemented and tested |
-| RetailTrace API client and server-side authentication | Implemented and tested against the live local service |
-| Supplier and Product schema initialization | Implemented and live-tested |
-| Order multiple-reference schema initialization | Implemented; live version initialization remains unverified because RetailTrace was unavailable |
-| Supplier and Product synchronization services | Implemented and live-tested |
-| Order synchronization service | Implemented and tested with injected RetailTrace responses; live submission remains unverified |
-| Failed synchronization and retry | Implemented; successful retry behavior is covered by tests, and an unavailable-upstream retry was exercised live |
-| Record verification | Implemented and live-tested |
+| RetailTrace API client and server-side authentication | Contract-tested; current live RetailTrace smoke test passed |
+| Verdant Supplier and Product schema initialization | Automated contract covered; local PostgreSQL integration not run in this session |
+| RetailTrace schema initialization | Reuses matching schemas; creates a new schema when definitions differ because the current RetailTrace API has no update route |
+| Supplier, Product, and Order synchronization | Automated tests cover scalar-reference and publication contracts |
+| Failed synchronization and retry | Uncertain submissions are reconciled before any retry can submit again |
+| Record and transaction verification | Uses RetailTrace record verification; transaction lookup is composed from record listing because no transaction endpoint exists |
 | Supplier create/list/detail API and automatic synchronization | Implemented and API-tested |
 | Product create/list/detail API and automatic synchronization | Implemented and API-tested |
-| Order create/list/detail API and multiple-Product synchronization | Implemented; automated API and sync tests pass |
-| RetailTrace multiple-reference support | Implemented in the separate RetailTrace project; backend tests, typecheck/build, frontend build, and lint passed |
-| Order record synchronization | Implemented with a RetailTrace `products` multiple-reference field |
-| Dashboard integration with the Verdant Store API | Implemented and browser-checked; RetailTrace credentials remain backend-only |
-| Backend automated tests | Supplier, Product, and Order API plus sync tests implemented and passing |
+| Order create/list/detail API and multiple-Product synchronization | Implemented; one scalar RetailTrace reference is emitted per OrderItem |
+| Dashboard integration with the Verdant Store API | Implemented; displays RetailTrace transaction IDs and blockchain publication status |
+| Backend automated tests | RetailTrace API contract, synchronization, Supplier/Product/Order API tests pass |
 
-`SYNCED` means RetailTrace accepted the record and returned a record ID. It does
-not by itself mean the blockchain transaction has been confirmed; use the
-verification endpoint to check that separately.
+`syncStatus` tracks Verdant's record synchronization. `retailTraceStatus` and
+`transactionId` track RetailTrace's blockchain publication result; a returned
+record ID alone is not treated as blockchain confirmation.
 
 ## Business scenario
 
@@ -306,21 +303,13 @@ must remain server-side.
 ### Schema initialization and versioning
 
 `POST /api/integration/initialize` registers schemas in dependency order:
-Supplier, Product, then Order. It first lists schemas and fetches existing
-definitions. If a stored or existing schema's fields and references match, its
-ID is reused. If a same-named schema exists but differs, the backend uses
-RetailTrace's documented `PUT /api/schemas/{schemaID}` operation to create a
-new version rather than creating a duplicate name. IDs are persisted in the
-single `IntegrationConfig` row as each step completes, so a partial failure
-does not discard successful earlier steps.
-
-Earlier live initialization created matching schema versions and confirmed
-repeat initialization reused them. The updated multiple-reference Order
-version is implemented but has not been initialized against RetailTrace in
-this task because the local RetailTrace service was unavailable. On the next
-initialization, the backend compares the field definition, creates a new Order
-schema version when the existing one is scalar, and persists the resulting
-schema ID. Repeated initialization should reuse the matching version.
+Supplier, Product, then Order. It lists schemas and fetches their definitions
+before reusing a matching ID. The current RetailTrace source exposes schema
+creation and retrieval but no update route; when no matching definition exists,
+Verdant creates a separate schema and saves its ID. Schema creation in
+RetailTrace currently returns version `1`, including for same-name schemas.
+IDs are persisted as each step completes so a partial initialization retains
+successful earlier steps.
 
 The registered fields are:
 
@@ -328,13 +317,15 @@ The registered fields are:
 |---|---|
 | Supplier | `name` string, `email` string, `country` string, `active` boolean |
 | Product | `name` string, `price` number, `stockQuantity` integer, `organic` boolean, `manufacturedOn` date, `supplierId` reference to Supplier |
-| Order | `customerName` string, `total` number, `status` string, `products` multiple reference to Product |
+| Order | `customerName` string, `total` number, `status` string, `product1` reference to Product, `quantity1` integer |
 
-The RetailTrace API represents each reference field using
+RetailTrace supports scalar references using
 `{ name, type: "reference", targetSchemaId, required }`. The target schema ID
-belongs in the schema definition; the reference value submitted in Product
-data is the Supplier's RetailTrace **record** ID. Order's `products` field
-adds `multiple: true` and accepts an array of Product RetailTrace record IDs.
+belongs in the schema definition; record data contains the referenced
+RetailTrace **record** ID. The current RetailTrace implementation does not
+support array-valued references. For orders with multiple items, Verdant
+creates/reuses an `Order-N-Products` schema with distinct scalar reference and
+quantity fields for each line (`product1`, `quantity1`, etc.).
 
 ### Supplier and Product synchronization
 
@@ -344,25 +335,27 @@ Supplier schema, and stores the returned `data.recordId`.
 
 `syncProduct(localProductId)` loads the Product and its local Supplier,
 ensures the Supplier has a RetailTrace record ID, then submits the Product's
-name, numeric price, stock quantity, organic flag, date, and that RetailTrace
-Supplier record ID. It never uses the PostgreSQL Supplier primary key as a
+name, numeric price, stock quantity, organic flag, ISO date-time, and that
+RetailTrace Supplier record ID. The date-time format matches RetailTrace's
+`date` field validator. It never uses the PostgreSQL Supplier primary key as a
 RetailTrace reference.
 
 `syncOrder(localOrderId)` loads the local OrderItems, ensures each Product is
-synchronized, and submits the corresponding RetailTrace Product record IDs in
-the `products` array. The array is formed in ascending local Product ID order
-for deterministic submissions; its values are still the independent
-RetailTrace IDs, never PostgreSQL IDs. A failed Product sync prevents the Order
-record submission and leaves the Order mapping failed for retry.
+synchronized, then submits each RetailTrace Product record ID in its own
+scalar reference field alongside that line's quantity. Items are ordered by
+local Product ID for deterministic submissions; references always contain
+RetailTrace IDs, never PostgreSQL IDs. A failed required Supplier or Product
+sync prevents the Order record submission and leaves the Order mapping failed
+for retry.
 
 Each local entity has one unique synchronization mapping. If a record ID is
-already stored, another sync/retry returns that mapping rather than publishing
-a duplicate. If a submission fails, the mapping is marked `FAILED` with the
-RetailTrace error. The retry endpoint retries Supplier, Product, and Order
-mappings with no stored record ID. Because RetailTrace does not accept a
-shared idempotency key, a connection loss after RetailTrace accepts a record
-but before Verdant Store saves its returned ID cannot be proven duplicate-free
-on retry; successful IDs already saved locally are never resubmitted.
+already stored, another sync/retry refreshes that record rather than
+resubmitting it. Before POST, Verdant persists the submission timestamp and an
+uncertain-outcome marker. If the response is lost or RetailTrace reports a
+processing failure, retries look for an exact matching record created around
+that attempt and recover its record/transaction IDs. If no match exists yet,
+the sync remains pending; Verdant does not issue another POST. Multiple matches
+are surfaced as ambiguous instead of being silently selected.
 
 Supplier creation now calls `syncSupplier` automatically after the local
 Supplier and pending sync mapping have been created transactionally. The
@@ -376,73 +369,11 @@ Product synchronization fails visibly and remains retryable.
 
 ### Order synchronization representation
 
-The RetailTrace Order schema now contains `products`, a required
-`multiple: true` reference to the Product schema. `POST /api/orders` accepts
-customer name and Product/quantity pairs. PostgreSQL stores each OrderItem's
-quantity and price snapshot and the computed Order total. RetailTrace receives
-the customer name, total, status, and the complete array of Product
-RetailTrace record IDs. Per-item quantities and unit prices remain in
-PostgreSQL and are not represented in the current RetailTrace Order schema.
-`/api/integration/status` reports `orderSynchronization: "implemented"`.
-
-### RetailTrace multiple-reference support
-
-The separate RetailTrace project at `../RetailTrace` now implements and tests
-backward-compatible array-valued references. A reference field without
-`multiple`, or with `multiple: false`, still contains one record ID. With
-`multiple: true`, its data value is an array of record IDs. For example:
-
-```json
-{
-  "name": "Order",
-  "fields": [
-    { "name": "orderNumber", "type": "string", "required": true },
-    {
-      "name": "products",
-      "type": "reference",
-      "targetSchemaId": "<product-schema-id>",
-      "multiple": true,
-      "required": true
-    }
-  ]
-}
-```
-
-```json
-{
-  "orderNumber": "ORD-001",
-  "products": ["<product-record-id-1>", "<product-record-id-2>"]
-}
-```
-
-Every reference ID is checked against the authenticated business and the
-declared target schema. An invalid element rejects the submission with its
-field/index information. Empty arrays and duplicate IDs are allowed;
-`required: true` requires the array property to be present. Submitted order is
-preserved and is significant to the canonical record hash. Existing schema
-versions without `multiple` remain scalar; no schema or record migration is
-required.
-
-The RetailTrace schema builder now exposes an “Allow multiple records” option.
-The record form uses a multi-select and the record detail page resolves each
-referenced record. Scalar references retain their existing single-select
-behavior. RetailTrace's create, verification, and reconciliation paths reuse
-the same canonical hash function.
-
-Relevant RetailTrace implementation files include
-`backend/src/schemas/json-schema.validator.ts`,
-`backend/src/services/record.service.ts`,
-`frontend/src/pages/SchemasPage.tsx`,
-`frontend/src/pages/CreateRecordPage.tsx`, and
-`frontend/src/pages/RecordDetailsPage.tsx`. The RetailTrace API contract is
-documented in [`../RetailTrace/docs/api-contract.md`](../RetailTrace/docs/api-contract.md)
-and [`../RetailTrace/README.md`](../RetailTrace/README.md).
-
-RetailTrace verification for this feature: all 59 backend tests passed,
-including reference validation, hashing, and a stored-record verification
-path. Backend TypeScript build, frontend production build, and frontend lint
-also passed. These tests use injected repository/blockchain dependencies; no
-live MongoDB/MultiChain end-to-end test was run.
+RetailTrace validates each reference as one 24-character record ID string.
+Orders with N distinct Products therefore use N scalar reference fields rather
+than an array. The generated Order schema also includes a quantity field for
+each item; PostgreSQL remains the source for unit-price snapshots. A missing
+or failed required Supplier/Product synchronization prevents Order publication.
 
 ## Express API
 
@@ -455,18 +386,19 @@ is not returned to callers. CORS is not an authentication mechanism.
 | `GET` | `/api/health` | Business backend health | None | Implemented and tested |
 | `GET` | `/api/integration/status` | Local schema initialization and synchronization status | None | Implemented and tested |
 | `GET` | `/api/integration/health` | RetailTrace blockchain health check | None locally; backend uses RetailTrace bearer key | Implemented and tested |
-| `POST` | `/api/integration/initialize` | Register, reuse, or version the three RetailTrace schemas | None locally; backend uses RetailTrace bearer key | Implemented and tested, including repeat initialization |
+| `POST` | `/api/integration/initialize` | Reuse or create compatible RetailTrace schemas | None locally; backend uses RetailTrace bearer key | Implemented and tested |
 | `GET` | `/api/integration/schemas` | List schemas owned by the configured RetailTrace business | None locally; backend uses RetailTrace bearer key | Implemented and tested |
 | `GET` | `/api/integration/records` | List records owned by that RetailTrace business | None locally; backend uses RetailTrace bearer key | Implemented and tested |
-| `POST` | `/api/integration/retry/:syncId` | Retry a failed Supplier, Product, or Order mapping, or return an already stored successful mapping | None locally; backend uses RetailTrace bearer key | Implemented and tested |
+| `POST` | `/api/integration/retry/:syncId` | Refresh or safely retry a Supplier, Product, or Order mapping | None locally; backend uses RetailTrace bearer key | Implemented and tested |
 | `GET` | `/api/integration/records/:recordId/verify` | Ask RetailTrace to verify a record | None locally; backend uses RetailTrace bearer key | Implemented and tested |
+| `GET` | `/api/integration/transactions/:transactionId/verify` | Find a record by transaction ID and verify that record | None locally; backend uses RetailTrace bearer key | Implemented; composed from RetailTrace record-list and record-verification endpoints |
 | `POST` | `/api/suppliers` | Validate, save, and synchronize a Supplier | None | Implemented and API-tested |
 | `GET` | `/api/suppliers` | List Suppliers with their sync state | None | Implemented and API-tested |
 | `GET` | `/api/suppliers/:id` | Get a Supplier and its sync state | None | Implemented and API-tested |
 | `POST` | `/api/products` | Validate the local Supplier, save, and synchronize a Product with its RetailTrace Supplier reference | None | Implemented and API-tested |
 | `GET` | `/api/products` | List Products with local Supplier and sync state | None | Implemented and API-tested |
 | `GET` | `/api/products/:id` | Get a Product, local Supplier, and sync state | None | Implemented and API-tested |
-| `POST` | `/api/orders` | Validate Products, calculate totals, save OrderItems, and synchronize all Product references | None | Implemented and API-tested |
+| `POST` | `/api/orders` | Validate Products, calculate totals, save OrderItems, and synchronize scalar Product references | None | Implemented and API-tested |
 | `GET` | `/api/orders` | List Orders with line items and Product/Order sync state | None | Implemented and API-tested |
 | `GET` | `/api/orders/:id` | Get an Order with line items and synchronization state | None | Implemented and API-tested |
 
@@ -479,9 +411,9 @@ total are derived from local Product prices rather than client-supplied values.
 
 Business create endpoints return HTTP 201 once the local transaction succeeds,
 including when RetailTrace synchronization fails. Inspect the returned
-`synchronization.syncStatus` and `errorMessage`; use the retry endpoint with
-that mapping's ID. This response means local creation succeeded, not that
-RetailTrace accepted the record.
+`synchronization.syncStatus`, `retailTraceStatus`, `transactionId`, and
+`errorMessage`; use the retry endpoint with that mapping's ID. This response
+means local creation succeeded, not that blockchain publication is confirmed.
 
 The business health endpoint returns `{ "status": "ok" }`. Integration
 endpoints generally use `{ "success": true, "data": ... }`; integration
@@ -491,9 +423,8 @@ request or response includes the API key.
 
 ## RetailTrace API contract used
 
-The separate RetailTrace service publishes its Swagger documentation at
-`http://localhost:5000/api/docs`. The backend uses the following documented
-endpoints under the configured `/api` base URL:
+The RetailTrace source used for compatibility exposes the following
+authenticated business endpoints under the configured `/api` base URL:
 
 | Method | RetailTrace path | Use |
 |---|---|---|
@@ -501,16 +432,23 @@ endpoints under the configured `/api` base URL:
 | `GET` | `/schemas` | List the authenticated business's schema versions |
 | `GET` | `/schemas/{schemaID}` | Read fields and reference targets before reusing a schema |
 | `POST` | `/schemas` | Create a schema with `{ name, fields }` |
-| `PUT` | `/schemas/{schemaID}` | Create a new version of an existing schema |
-| `POST` | `/records` | Publish `{ schemaId, data }`; response record ID is `data.recordId` |
+| `POST` | `/records` | Create `{ schemaId, data }`, synchronously publish, then return a record |
 | `GET` | `/records` | List the authenticated business's records |
+| `GET` | `/records/{recordId}` | Retrieve a record, including current status and transaction ID |
 | `GET` | `/records/{recordId}/verify` | Verify a record and return `verified` and `transactionId` |
 
-Successful RetailTrace responses use `{ "success": true, "data": ... }`. The
-documented error shape is
+Successful RetailTrace responses use `{ "success": true, "data": ... }`;
+record creation returns `data.recordId`, `data.transactionId`, and
+`data.status`. The record ID is created before blockchain publication, and a
+successful synchronous `publishfrom` returns a transaction ID with
+`CONFIRMED`. Publication failures return an error while retaining the record
+as `PENDING` for RetailTrace's reconciliation worker. Errors generally use
 `{ "success": false, "error": { "code": "...", "message": "..." } }`.
-Reference targets are declared by schema ID; record data must contain the
-RetailTrace record ID of a record from that target schema.
+Reference targets are declared by schema ID; each reference value is one
+RetailTrace record ID. The current API has no schema-update route, no
+array-valued reference support, and no transaction-specific verification route.
+Verdant verifies a transaction by finding its record in `/records` and calling
+that record's `/verify` endpoint.
 
 In live testing, a malformed reference was rejected with
 `INVALID_RECORD: Record data failed schema validation`, persisted locally as a
@@ -569,8 +507,9 @@ npm run dev
 ```
 
 Vite prints its local URL, normally `http://localhost:5173`. Open that URL for
-the Verdant Store integration dashboard. If the business backend uses another
-URL, set `VITE_API_BASE_URL` in the frontend environment before starting Vite.
+the Verdant Store storefront; open `/admin` for the integration dashboard. If
+the business backend uses another URL, set `VITE_API_BASE_URL` in the frontend
+environment before starting Vite.
 Frontend checks are:
 
 ```bash
@@ -578,9 +517,9 @@ npm run build
 npm run lint
 ```
 
-The dashboard is not a full storefront: it has no Supplier/Product creation,
-cart, or checkout pages. Supplier APIs can be exercised directly. The
-RetailTrace Swagger UI is at
+The storefront supports product browsing, checkout, order receipts, and record
+verification. Supplier APIs can also be exercised directly. The
+RetailTrace documentation UI is at
 `http://localhost:5000/api/docs`.
 
 ### 4. Inspect the database
@@ -592,22 +531,20 @@ tables and `_prisma_migrations`.
 
 ## Instructor demonstration guide
 
-The dashboard can demonstrate integration status, existing RetailTrace
-records, schema initialization, verification, and retry. It does not yet
-provide a browser storefront or business create form:
+The storefront and dashboard demonstrate checkout, record synchronization,
+schema initialization, blockchain status, verification, and retry:
 
 1. Start RetailTrace, PostgreSQL, and the backend using the instructions above.
-2. Open `http://localhost:5173` for the Verdant Store dashboard. Point out the
-   integration status, schema count, synchronization counts, and blockchain
-   health. The dashboard reads them through the business backend.
+2. Open `http://localhost:5173` for the storefront and `/admin` for the
+   integration dashboard. The dashboard reads integration status, schema
+   count, synchronization state, and blockchain health through the business
+   backend.
 3. Use **Initialize schemas** to register or reuse the three schemas. The
    dashboard reports the initialization result; click it again to demonstrate
    idempotent reuse. The registered schema names, IDs, and versions are listed
    in the schema panel.
-4. In the published-records panel, search for a known record and use its
-   **Verify** button to display its blockchain verification result. Records
-   shown belong to the configured RetailTrace business account and may include
-   records outside this demo.
+4. In the published-records panel, search for a record and use its **Verify**
+   button to display RetailTrace's verification result and transaction ID.
 5. Create a Supplier through the business API and inspect the response:
 
    ```bash
@@ -643,86 +580,38 @@ provide a browser storefront or business create form:
      -d '{"customerName":"Morgan Lee","items":[{"productId":"<local-product-id-1>","quantity":1},{"productId":"<local-product-id-2>","quantity":2}]}'
    ```
 
-   Explain that PostgreSQL retains each quantity and price, while the
-   RetailTrace Order record links the complete Product record-ID array.
+   Explain that PostgreSQL retains each quantity and price snapshot, while
+   RetailTrace stores one scalar Product reference and quantity per item.
    `GET /api/orders` shows the local order and its sync status.
 10. Explain that PostgreSQL remains the business database, while RetailTrace
    stores the separate traceability records and provides verification.
 
-The existing React dashboard is unchanged and still has no business record
-creation forms, cart, or checkout.
+## Verification
 
-## Verification actually performed
+The backend `npm test` command runs the node:test suite through `tsx`. Current
+automated coverage includes RetailTrace request/response envelopes, pending
+and confirmed publication, timeout/error handling, Supplier and Product
+references, scalar Order references for multiple items, transaction ID
+persistence, uncertain-submission recovery, and retry without duplicate POSTs.
+The frontend does not currently have a separate automated test suite.
+The final backend suite passed 22 tests, backend typecheck/build and Prisma
+validation passed, and frontend production build and lint passed.
 
-- Prisma schema validation and client generation.
-- PostgreSQL initial migration, migration status, and seed execution.
-- Backend TypeScript check and production build.
-- Live RetailTrace blockchain health check.
-- Live schema initialization, repeated initialization, and field/reference
-  inspection.
-- Live Supplier and Product submissions; confirmed Product references point
-  to the returned RetailTrace Supplier record ID.
-- Confirmed successful retry does not increase the RetailTrace record count.
-- Live malformed-reference rejection, persisted `FAILED` state, and successful
-  retry through the backend endpoint.
-- Live RetailTrace verification returned `verified: true` for submitted
-  records.
-- Confirmed schema IDs and synchronization record IDs were stored in
-  PostgreSQL.
-- Frontend production build (`npm run build`) and lint (`npm run lint`) passed.
-- Opened the dashboard against the running backend and RetailTrace service;
-  verified that connection health, three configured schemas, synchronization
-  counts, and published records loaded.
-- Used the dashboard to repeat schema initialization and observed the
-  idempotent reuse message; verified a record through its **Verify** action.
-- Checked published-record search and a narrow responsive viewport; the search
-  filtered to one matching row and the page had no horizontal overflow.
-- RetailTrace's multiple-reference change: all 59 backend tests passed,
-  including schema/array validation, per-ID ownership and target checks,
-  array-order hash behavior, and verification of a record containing
-  references. Backend TypeScript build and frontend build/lint passed.
-- No live MongoDB/MultiChain end-to-end test was run for multiple references;
-  the backend tests inject repository and blockchain dependencies.
-- Supplier API tests: all 4 route/service tests passed, including successful
-  local creation and sync mapping, invalid input, unavailable RetailTrace with
-  preserved local Supplier and `FAILED` sync state, Supplier listing, and
-  not-found handling.
-- Supplier API TypeScript build passed. These Supplier API tests exercise the
-  route and synchronization orchestration with an in-memory repository and
-  injected RetailTrace outcomes; see the separate live PostgreSQL failure-path
-  check below.
-- Product API tests: all 4 route/service tests passed, including validation,
-  local Supplier lookup, use of a distinct RetailTrace Supplier record ID,
-  unavailable RetailTrace behavior, listing, and not-found handling.
-- Product API TypeScript check passed. These tests use an in-memory repository
-  and injected RetailTrace outcomes; see the separate live PostgreSQL
-  failure-path check below.
-- Order API tests: all 4 route/service tests passed, including validation,
-  Product existence checks, locally calculated totals, local preservation on
-  RetailTrace failure, listing, and not-found handling.
-- RetailTrace sync tests: both tests passed, confirming Product references
-  use RetailTrace record IDs, Order submits a multiple-reference array, a
-  successful retry reuses stored IDs, and a failed Order retry does not
-  resubmit already synchronized Products.
-- Order API backend TypeScript check passed. All API tests use in-memory
-  repositories and injected RetailTrace outcomes; successful live RetailTrace
-  Order submission and live schema version initialization have not yet been
-  run in this stage.
-- Live PostgreSQL/API resilience check: created Supplier, Product, and Order
-  records while RetailTrace was unreachable. Each request returned HTTP 201
-  with the local row preserved and a `FAILED` sync mapping; GET `/api/orders`
-  returned the persisted OrderItem. The existing retry endpoint returned
-  HTTP 503 and left the mapping failed. The uniquely identified test rows and
-  their sync mappings were then removed; no other database rows were deleted.
-- The RetailTrace service was not listening on `localhost:5000`, so successful
-  live submissions, multiple-reference schema version initialization, and
-  blockchain verification for newly created Order records remain unverified.
-- Final backend suite: `npm test` passed **14 tests**; `npm run typecheck` and
-  `npm run build` passed. Frontend `npm run build` and `npm run lint` passed;
-  no dashboard redesign was performed.
+The current working RetailTrace service passed a live smoke test: its
+authenticated health check was connected; three uniquely named test schemas
+and four synthetic Supplier/Product/Order records were created; transaction
+IDs were returned; both Supplier and multiple scalar Order references were
+accepted; and record and transaction verification succeeded. These smoke-test
+schemas and records were left in RetailTrace; no existing data was deleted.
 
-The backend `npm test` command runs the node:test suite through `tsx`. The
-frontend does not currently have an automated test suite.
+The live test exercised RetailTrace directly, not the complete Verdant
+PostgreSQL-backed application. Verdant's local backend (`localhost:5001`) and
+PostgreSQL (`localhost:5433`) were unavailable, so the new additive migration
+was not applied and a full Verdant-to-RetailTrace order workflow was not
+claimed as end-to-end verified. Apply the migration with
+`cd backend && npx prisma migrate deploy` when the configured database is
+available. No QR generator or scanner is present in the current frontend
+source; the existing record and transaction verification UI remains in place.
 
 ## Living documentation
 
