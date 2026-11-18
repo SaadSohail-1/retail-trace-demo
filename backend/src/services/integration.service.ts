@@ -6,6 +6,7 @@ import {
   type RetailTraceSchemaField,
   type RetailTraceSchemaSummary,
 } from "./retailtrace-api.service.js";
+import { syncOrder, syncProduct, syncSupplier } from "./sync.service.js";
 
 type SchemaKey = "supplierSchemaId" | "productSchemaId" | "orderSchemaId";
 type SchemaName = "Supplier" | "Product" | "Order";

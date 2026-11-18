@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import {
   getIntegrationStatus,
   initializeIntegration,
+  syncAllEntities,
 } from "../services/integration.service.js";
 import { IntegrationError } from "../services/integration-errors.js";
 import { retailTraceApi } from "../services/retailtrace-api.service.js";
@@ -24,6 +25,10 @@ export async function getHealth(_request: Request, response: Response): Promise<
 
 export async function initialize(_request: Request, response: Response): Promise<void> {
   response.json({ success: true, data: await initializeIntegration() });
+}
+
+export async function syncAll(_request: Request, response: Response): Promise<void> {
+  response.json({ success: true, data: await syncAllEntities() });
 }
 
 export async function getSchemas(_request: Request, response: Response): Promise<void> {

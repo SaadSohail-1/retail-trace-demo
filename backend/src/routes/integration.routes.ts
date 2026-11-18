@@ -6,6 +6,7 @@ import {
   getStatus,
   initialize,
   retrySync,
+  syncAll,
   verifyRecord,
 } from "../controllers/integration.controller.js";
 
@@ -14,6 +15,7 @@ export const integrationRouter = Router();
 integrationRouter.get("/status", getStatus);
 integrationRouter.get("/health", getHealth);
 integrationRouter.post("/initialize", initialize);
+integrationRouter.post("/sync-all", syncAll);
 integrationRouter.get("/schemas", getSchemas);
 integrationRouter.get("/records", getRecords);
 integrationRouter.post("/retry/:syncId", retrySync);
