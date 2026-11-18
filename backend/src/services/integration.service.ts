@@ -1,4 +1,5 @@
 import { prisma } from "../config/database.js";
+import type { RetailTraceSync } from "../generated/prisma/client.js";
 import { IntegrationError, RetailTraceApiError } from "./integration-errors.js";
 import {
   retailTraceApi,
@@ -273,6 +274,53 @@ export async function initializeIntegration() {
     },
     completed,
   };
+}
+
+export async function syncAllEntities() {
+  const [suppliers, products, orders] = await Promise.all([
+    prisma.supplier.findMany({ orderBy: { createdAt: "asc" } }),
+    prisma.product.findMany({ orderBy: { createdAt: "asc" } }),
+    prisma.order.findMany({ orderBy: { createdAt: "asc" } }),
+  ]);
+
+  const results = {
+    suppliers: [] as RetailTraceSync[],
+    products: [] as RetailTraceSync[],
+    orders: [] as RetailTraceSync[],
+  };
+
+  for (const supplier of suppliers) {
+    try {
+      results.suppliers.push(await syncSupplier(supplier.id));
+    } catch (error) {
+      const sync = await prisma.retailTraceSync.findUnique({
+        where: { entityType_localEntityId: { entityType: "Supplier", localEntityId: supplier.id } },
+      });
+      if (sync) results.suppliers.push(sync);
+    }
+  }
+  for (const product of products) {
+    try {
+      results.products.push(await syncProduct(product.id));
+    } catch {
+      const sync = await prisma.retailTraceSync.findUnique({
+        where: { entityType_localEntityId: { entityType: "Product", localEntityId: product.id } },
+      });
+      if (sync) results.products.push(sync);
+    }
+  }
+  for (const order of orders) {
+    try {
+      results.orders.push(await syncOrder(order.id));
+    } catch {
+      const sync = await prisma.retailTraceSync.findUnique({
+        where: { entityType_localEntityId: { entityType: "Order", localEntityId: order.id } },
+      });
+      if (sync) results.orders.push(sync);
+    }
+  }
+
+  return results;
 }
 
 export async function getIntegrationStatus() {

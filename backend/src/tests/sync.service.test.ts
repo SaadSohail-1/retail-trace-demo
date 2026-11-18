@@ -103,6 +103,7 @@ function createSyncFixture() {
       entityType,
       localEntityId,
       retailTraceRecordId: recordId,
+      transactionId: null,
       syncStatus: status,
       errorMessage: null,
       createdAt: now,

@@ -24,7 +24,11 @@ export interface SyncRepository {
   findSync(id: string): Promise<RetailTraceSync | null>;
   getOrCreateSync(entityType: EntityType, localEntityId: string): Promise<RetailTraceSync>;
   getIntegrationConfig(): Promise<IntegrationConfig | null>;
-  markSynced(syncId: string, retailTraceRecordId: string): Promise<RetailTraceSync>;
+  markSynced(
+    syncId: string,
+    retailTraceRecordId: string,
+    transactionId?: string | null,
+  ): Promise<RetailTraceSync>;
   markFailed(syncId: string, error: unknown): Promise<void>;
 }
 
@@ -32,7 +36,7 @@ export interface SyncRecordClient {
   createRecord(input: {
     schemaId: string;
     data: Record<string, RetailTraceRecordValue>;
-  }): Promise<{ recordId: string }>;
+  }): Promise<{ recordId: string; transactionId?: string | null }>;
 }
 
 const prismaSyncRepository: SyncRepository = {
@@ -51,10 +55,15 @@ const prismaSyncRepository: SyncRepository = {
       update: {},
     }),
   getIntegrationConfig: () => prisma.integrationConfig.findUnique({ where: { id: 1 } }),
-  markSynced: (syncId, retailTraceRecordId) =>
+  markSynced: (syncId, retailTraceRecordId, transactionId) =>
     prisma.retailTraceSync.update({
       where: { id: syncId },
-      data: { retailTraceRecordId, syncStatus: "SYNCED", errorMessage: null },
+      data: {
+        retailTraceRecordId,
+        transactionId: transactionId ?? null,
+        syncStatus: "SYNCED",
+        errorMessage: null,
+      },
     }),
   async markFailed(syncId, error) {
     const errorMessage =
@@ -109,7 +118,7 @@ export function createSyncService(
           active: supplier.active,
         },
       });
-      return await repository.markSynced(sync.id, record.recordId);
+      return await repository.markSynced(sync.id, record.recordId, record.transactionId);
     } catch (error) {
       await repository.markFailed(sync.id, error);
       throw error;
@@ -151,7 +160,7 @@ export function createSyncService(
           supplierId: supplierSync.retailTraceRecordId,
         },
       });
-      return await repository.markSynced(sync.id, record.recordId);
+      return await repository.markSynced(sync.id, record.recordId, record.transactionId);
     } catch (error) {
       await repository.markFailed(sync.id, error);
       throw error;
@@ -202,7 +211,7 @@ export function createSyncService(
           products: productRecordIds,
         },
       });
-      return await repository.markSynced(sync.id, record.recordId);
+      return await repository.markSynced(sync.id, record.recordId, record.transactionId);
     } catch (error) {
       await repository.markFailed(sync.id, error);
       throw error;

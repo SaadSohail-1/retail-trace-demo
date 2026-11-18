@@ -30,6 +30,7 @@ function createInMemoryRepository() {
         entityType: "Supplier",
         localEntityId: supplier.id,
         retailTraceRecordId: null,
+        transactionId: null,
         syncStatus: "PENDING",
         errorMessage: null,
         createdAt: now,

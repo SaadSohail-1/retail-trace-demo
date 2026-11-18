@@ -55,7 +55,7 @@ function recordPreview(record: RetailTraceRecord): string {
   return firstValue === undefined ? 'Traceability record' : String(firstValue)
 }
 
-function App() {
+export function AdminDashboard() {
   const [status, setStatus] = useState<IntegrationStatus | null>(null)
   const [health, setHealth] = useState<BlockchainHealth | null>(null)
   const [schemas, setSchemas] = useState<SchemaSummary[]>([])
@@ -63,7 +63,7 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [refreshError, setRefreshError] = useState('')
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
-  const [busyAction, setBusyAction] = useState<'initialize' | 'retry' | null>(null)
+  const [busyAction, setBusyAction] = useState<'initialize' | 'sync' | 'retry' | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [retrySyncId, setRetrySyncId] = useState('')
   const [recordSearch, setRecordSearch] = useState('')
@@ -134,6 +134,29 @@ function App() {
           ? 'All schemas are ready. Existing matching schema versions were reused.'
           : `Initialization ${result.status}${result.failedAt ? ` at ${result.failedAt}` : ''}${result.error ? `: ${result.error.message}` : ''}`
       setNotice({ kind: result.status === 'initialized' ? 'success' : 'warning', message })
+      await refresh()
+    } catch (error) {
+      setNotice({ kind: 'error', message: getErrorMessage(error) })
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  async function handleSyncAll() {
+    setBusyAction('sync')
+    setNotice(null)
+    try {
+      const result = await api.syncAll()
+      const failed =
+        [...result.suppliers, ...result.products, ...result.orders].filter(
+          (sync) => sync.syncStatus === 'FAILED',
+        ).length
+      setNotice({
+        kind: failed ? 'warning' : 'success',
+        message: failed
+          ? `${failed} records still need attention.`
+          : 'Suppliers, products, and orders are synced to RetailTrace.',
+      })
       await refresh()
     } catch (error) {
       setNotice({ kind: 'error', message: getErrorMessage(error) })
@@ -277,6 +300,18 @@ function App() {
               <span className="last-updated">
                 {lastUpdated ? `Updated ${formatDate(lastUpdated.toISOString())}` : 'Loading data'}
               </span>
+              <button
+                className="button button-secondary"
+                onClick={() => void handleSyncAll()}
+                disabled={busyAction !== null}
+              >
+                {busyAction === 'sync' ? (
+                  <LoaderCircle size={17} className="spin" />
+                ) : (
+                  <RefreshCw size={17} />
+                )}
+                Sync all records
+              </button>
               <button
                 className="button button-primary"
                 onClick={() => void handleInitialize()}
@@ -571,4 +606,4 @@ function App() {
   )
 }
 
-export default App
+export default AdminDashboard

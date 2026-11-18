@@ -361,6 +361,12 @@
   background: #244d37;
 }
 
+.button-secondary {
+  border-color: #d8e2d2;
+  background: #f8faf6;
+  color: #536b4d;
+}
+
 .button-dark {
   width: 42px;
   min-height: 39px;

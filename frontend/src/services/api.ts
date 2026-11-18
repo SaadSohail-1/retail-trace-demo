@@ -61,6 +61,39 @@ export interface SyncResult {
   retailTraceRecordId: string | null;
   syncStatus: "PENDING" | "SYNCED" | "FAILED";
   errorMessage: string | null;
+  transactionId: string | null;
+}
+
+export interface ProductView {
+  product: {
+    id: string;
+    name: string;
+    price: string;
+    stockQuantity: number;
+    organic: boolean;
+    manufacturedOn: string;
+  };
+  supplier: {
+    id: string;
+    name: string;
+    country: string;
+  };
+  synchronization: SyncResult | null;
+}
+
+export interface OrderView {
+  order: {
+    id: string;
+    customerName: string;
+    total: string;
+    status: string;
+    createdAt: string;
+  };
+  items: Array<{
+    orderItem: { quantity: number; unitPrice: string };
+    product: ProductView["product"];
+  }>;
+  synchronization: SyncResult | null;
 }
 
 export interface VerificationResult {
@@ -95,6 +128,24 @@ export function getErrorMessage(error: unknown): string {
 }
 
 export const api = {
+  async getProducts(): Promise<ProductView[]> {
+    const response = await client.get<ApiResponse<ProductView[]>>("/api/products");
+    return response.data.data;
+  },
+
+  async getOrders(): Promise<OrderView[]> {
+    const response = await client.get<ApiResponse<OrderView[]>>("/api/orders");
+    return response.data.data;
+  },
+
+  async createOrder(customerName: string, productId: string): Promise<OrderView> {
+    const response = await client.post<ApiResponse<OrderView>>("/api/orders", {
+      customerName,
+      items: [{ productId, quantity: 1 }],
+    });
+    return response.data.data;
+  },
+
   async getIntegrationStatus(): Promise<IntegrationStatus> {
     const response = await client.get<ApiResponse<IntegrationStatus>>("/api/integration/status");
     return response.data.data;
@@ -119,6 +170,19 @@ export const api = {
     const response = await client.post<ApiResponse<InitializationResult>>(
       "/api/integration/initialize",
     );
+    return response.data.data;
+  },
+
+  async syncAll(): Promise<{
+    suppliers: SyncResult[];
+    products: SyncResult[];
+    orders: SyncResult[];
+  }> {
+    const response = await client.post<ApiResponse<{
+      suppliers: SyncResult[];
+      products: SyncResult[];
+      orders: SyncResult[];
+    }>>("/api/integration/sync-all");
     return response.data.data;
   },
 
