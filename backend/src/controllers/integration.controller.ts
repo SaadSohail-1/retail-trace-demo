@@ -8,6 +8,12 @@ import { IntegrationError } from "../services/integration-errors.js";
 import { retailTraceApi } from "../services/retailtrace-api.service.js";
 import { retryFailedSync } from "../services/sync.service.js";
 import { buildCompatibilityReport } from "../services/schema-compatibility.service.js";
+import {
+  getPrismaModels,
+  type StoredSchemaMapping,
+} from "../services/schema-compatibility.service.js";
+import { prisma } from "../config/database.js";
+import type { Prisma } from "../generated/prisma/client.js";
 
 function requiredParam(value: string | string[] | undefined, name: string): string {
   if (typeof value !== "string" || value.length === 0) {
@@ -66,16 +72,137 @@ export async function uploadSchema(request: Request, response: Response): Promis
   });
 }
 
-export async function compareSchema(request: Request, response: Response): Promise<void> {
-  const entity = requiredParam(request.params.entity, "entity");
-  if (!["Supplier", "Product", "Order"].includes(entity)) {
-    throw new IntegrationError(400, "INVALID_ENTITY", "Entity must be Supplier, Product, or Order");
+function isMappingRecord(value: unknown): value is Record<string, StoredSchemaMapping> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStoredMapping(value: unknown): value is StoredSchemaMapping {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "modelName" in value &&
+    typeof value.modelName === "string" &&
+    "fieldMappings" in value &&
+    typeof value.fieldMappings === "object" &&
+    value.fieldMappings !== null &&
+    !Array.isArray(value.fieldMappings)
+  );
+}
+
+async function loadSchemaMappings(): Promise<Record<string, StoredSchemaMapping>> {
+  const config = await prisma.integrationConfig.findUnique({ where: { id: 1 } });
+  if (!config || !isMappingRecord(config.schemaMappings)) return {};
+  return Object.fromEntries(
+    Object.entries(config.schemaMappings).filter(([, mapping]) => isStoredMapping(mapping)),
+  ) as Record<string, StoredSchemaMapping>;
+}
+
+function readMappingRequest(body: unknown): StoredSchemaMapping {
+  if (
+    typeof body !== "object" ||
+    body === null ||
+    !("modelName" in body) ||
+    typeof body.modelName !== "string" ||
+    !("fieldMappings" in body) ||
+    typeof body.fieldMappings !== "object" ||
+    body.fieldMappings === null ||
+    Array.isArray(body.fieldMappings) ||
+    !Object.values(body.fieldMappings).every((field) => typeof field === "string")
+  ) {
+    throw new IntegrationError(
+      400,
+      "INVALID_SCHEMA_MAPPING",
+      "Expected modelName and a fieldMappings object of Prisma field to RetailTrace field names",
+    );
   }
+  const mapping = { modelName: body.modelName, fieldMappings: body.fieldMappings as Record<string, string> };
+  if (new Set(Object.values(mapping.fieldMappings)).size !== Object.values(mapping.fieldMappings).length) {
+    throw new IntegrationError(400, "INVALID_SCHEMA_MAPPING", "Each RetailTrace field can be mapped only once");
+  }
+  return mapping;
+}
+
+export async function listDatabaseModels(_request: Request, response: Response): Promise<void> {
+  response.json({ success: true, data: await getPrismaModels() });
+}
+
+export async function getSchemaMapping(request: Request, response: Response): Promise<void> {
   const schemaId = requiredParam(request.params.schemaId, "schemaId");
-  const schema = await retailTraceApi.getSchema(schemaId);
+  await retailTraceApi.getSchema(schemaId);
+  const mappings = await loadSchemaMappings();
+  response.json({ success: true, data: mappings[schemaId] ?? null });
+}
+
+export async function saveSchemaMapping(request: Request, response: Response): Promise<void> {
+  const schemaId = requiredParam(request.params.schemaId, "schemaId");
+  const [schema, models, mappings] = await Promise.all([
+    retailTraceApi.getSchema(schemaId),
+    getPrismaModels(),
+    loadSchemaMappings(),
+  ]);
+  const mapping = readMappingRequest(request.body);
+  const model = models.find((candidate) => candidate.entity === mapping.modelName);
+  if (!model) {
+    throw new IntegrationError(400, "INVALID_MODEL", `Unknown Prisma model '${mapping.modelName}'`);
+  }
+  const invalidDatabaseField = Object.keys(mapping.fieldMappings).find(
+    (fieldName) => !model.fields.some((field) => field.name === fieldName),
+  );
+  if (invalidDatabaseField) {
+    throw new IntegrationError(400, "INVALID_FIELD_MAPPING", `Prisma field '${invalidDatabaseField}' does not exist on ${model.entity}`);
+  }
+  const invalidRetailTraceField = Object.values(mapping.fieldMappings).find(
+    (fieldName) => !schema.fields.some((field) => field.name === fieldName),
+  );
+  if (invalidRetailTraceField) {
+    throw new IntegrationError(400, "INVALID_FIELD_MAPPING", `RetailTrace field '${invalidRetailTraceField}' does not exist on ${schema.name}`);
+  }
+  const nextMappings = { ...mappings, [schemaId]: mapping };
+  await prisma.integrationConfig.upsert({
+    where: { id: 1 },
+    create: { id: 1, schemaMappings: nextMappings as unknown as Prisma.InputJsonValue },
+    update: { schemaMappings: nextMappings as unknown as Prisma.InputJsonValue },
+  });
+  response.json({ success: true, data: mapping });
+}
+
+export async function compareSchema(request: Request, response: Response): Promise<void> {
+  const schemaId = requiredParam(request.params.schemaId, "schemaId");
+  const [schema, models, mappings, allSchemas] = await Promise.all([
+    retailTraceApi.getSchema(schemaId),
+    getPrismaModels(),
+    loadSchemaMappings(),
+    retailTraceApi.listSchemas(),
+  ]);
+  const inputMapping = readMappingRequest(request.body);
+  const model = models.find((candidate) => candidate.entity === inputMapping.modelName);
+  if (!model) {
+    throw new IntegrationError(400, "INVALID_MODEL", `Unknown Prisma model '${inputMapping.modelName}'`);
+  }
+  const targetSchemaModels: Record<string, string> = {};
+  for (const [id, savedMapping] of Object.entries(mappings)) {
+    targetSchemaModels[id] = savedMapping.modelName;
+  }
+  for (const summary of allSchemas) {
+    const exactModel = models.find(
+      (candidate) => candidate.entity.toLowerCase() === summary.name.toLowerCase(),
+    );
+    if (exactModel && targetSchemaModels[summary.schemaId] === undefined) {
+      targetSchemaModels[summary.schemaId] = exactModel.entity;
+    }
+  }
+  const saved = mappings[schemaId];
+  const configurationSaved = saved?.modelName === inputMapping.modelName &&
+    JSON.stringify(saved.fieldMappings) === JSON.stringify(inputMapping.fieldMappings);
   response.json({
     success: true,
-    data: buildCompatibilityReport(entity as "Supplier" | "Product" | "Order", schema),
+    data: buildCompatibilityReport(
+      model,
+      schema,
+      inputMapping.fieldMappings,
+      targetSchemaModels,
+      configurationSaved,
+    ),
   });
 }
 

@@ -7,6 +7,9 @@ import {
   getSchema,
   uploadSchema,
   compareSchema,
+  getSchemaMapping,
+  saveSchemaMapping,
+  listDatabaseModels,
   initialize,
   retrySync,
   syncAll,
@@ -22,8 +25,11 @@ integrationRouter.post("/initialize", initialize);
 integrationRouter.post("/sync-all", syncAll);
 integrationRouter.get("/schemas", getSchemas);
 integrationRouter.post("/schemas", uploadSchema);
+integrationRouter.get("/database-models", listDatabaseModels);
 integrationRouter.get("/schemas/:schemaId", getSchema);
-integrationRouter.get("/schemas/:schemaId/compare/:entity", compareSchema);
+integrationRouter.get("/schemas/:schemaId/mapping", getSchemaMapping);
+integrationRouter.put("/schemas/:schemaId/mapping", saveSchemaMapping);
+integrationRouter.post("/schemas/:schemaId/compare", compareSchema);
 integrationRouter.get("/records", getRecords);
 integrationRouter.post("/retry/:syncId", retrySync);
 integrationRouter.get("/transactions/:transactionId/verify", verifyTransaction);

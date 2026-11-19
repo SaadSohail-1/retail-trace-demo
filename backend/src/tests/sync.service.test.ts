@@ -89,6 +89,7 @@ function createSyncFixture() {
     supplierSchemaId: "supplier-schema",
     productSchemaId: "product-schema",
     orderSchemaId: "order-schema",
+    schemaMappings: {},
     initialized: true,
     createdAt: now,
     updatedAt: now,

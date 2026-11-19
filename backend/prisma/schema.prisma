@@ -91,6 +91,7 @@ model IntegrationConfig {
   supplierSchemaId String?
   productSchemaId  String?
   orderSchemaId    String?
+  schemaMappings   Json      @default("{}")
   initialized      Boolean  @default(false)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt

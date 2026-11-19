@@ -30,6 +30,8 @@ import {
   type VerificationResult,
   type SchemaDetail,
   type CompatibilityReport,
+  type DatabaseModel,
+  type SchemaMapping,
 } from './services/api'
 import './App.css'
 
@@ -96,6 +98,7 @@ export function AdminDashboard() {
   const [status, setStatus] = useState<IntegrationStatus | null>(null)
   const [health, setHealth] = useState<BlockchainHealth | null>(null)
   const [schemas, setSchemas] = useState<SchemaSummary[]>([])
+  const [models, setModels] = useState<DatabaseModel[]>([])
   const [records, setRecords] = useState<RetailTraceRecord[]>([])
   const [businessSyncRows, setBusinessSyncRows] = useState<BusinessSyncRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -112,6 +115,16 @@ export function AdminDashboard() {
   const [compatibility, setCompatibility] = useState<CompatibilityReport | null>(null)
   const [schemaUploadError, setSchemaUploadError] = useState('')
   const [schemaUploadSuccess, setSchemaUploadSuccess] = useState('')
+  const [schemaError, setSchemaError] = useState('')
+  const [modelsError, setModelsError] = useState('')
+  const [schemaDetailLoading, setSchemaDetailLoading] = useState(false)
+  const [schemaDetailError, setSchemaDetailError] = useState('')
+  const [mappingError, setMappingError] = useState('')
+  const [comparisonError, setComparisonError] = useState('')
+  const [selectedModel, setSelectedModel] = useState('')
+  const [fieldMappings, setFieldMappings] = useState<Record<string, string>>({})
+  const [comparisonSelection, setComparisonSelection] = useState('')
+  const [mappingSaving, setMappingSaving] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -121,6 +134,7 @@ export function AdminDashboard() {
       api.getIntegrationStatus(),
       api.getHealth(),
       api.getSchemas(),
+      api.getDatabaseModels(),
       api.getRecords(),
       api.getSuppliers(),
       api.getProducts(),
@@ -132,6 +146,7 @@ export function AdminDashboard() {
       statusResult,
       healthResult,
       schemaResult,
+      modelsResult,
       recordResult,
       supplierResult,
       productResult,
@@ -143,8 +158,21 @@ export function AdminDashboard() {
     if (healthResult.status === 'fulfilled') setHealth(healthResult.value)
     else failures.push(`RetailTrace health: ${getErrorMessage(healthResult.reason)}`)
 
-    if (schemaResult.status === 'fulfilled') setSchemas(schemaResult.value)
-    else failures.push(`Schemas: ${getErrorMessage(schemaResult.reason)}`)
+    if (schemaResult.status === 'fulfilled') {
+      setSchemas(schemaResult.value)
+      setSchemaError('')
+    } else {
+      setSchemaError(getErrorMessage(schemaResult.reason))
+      failures.push(`Schemas: ${getErrorMessage(schemaResult.reason)}`)
+    }
+
+    if (modelsResult.status === 'fulfilled') {
+      setModels(modelsResult.value)
+      setModelsError('')
+    } else {
+      setModelsError(getErrorMessage(modelsResult.reason))
+      failures.push(`Prisma models: ${getErrorMessage(modelsResult.reason)}`)
+    }
 
     if (recordResult.status === 'fulfilled') setRecords(recordResult.value)
     else failures.push(`Records: ${getErrorMessage(recordResult.reason)}`)
@@ -284,18 +312,102 @@ export function AdminDashboard() {
   async function handleSchemaDetail(schemaId: string) {
     setSchemaDetail(null)
     setCompatibility(null)
+    setComparisonSelection('')
+    setSchemaDetailError('')
+    setMappingError('')
+    setComparisonError('')
+    setSchemaDetailLoading(true)
     try {
-      setSchemaDetail(await api.getSchema(schemaId))
+      const [detail, savedMapping] = await Promise.all([
+        api.getSchema(schemaId),
+        api.getSchemaMapping(schemaId),
+      ])
+      setSchemaDetail(detail)
+      const exactModel = models.find(
+        (model) => model.entity.toLowerCase() === detail.name.toLowerCase(),
+      )
+      const initialModel = savedMapping?.modelName ?? exactModel?.entity ?? ''
+      setSelectedModel(initialModel)
+      if (savedMapping) {
+        setFieldMappings(savedMapping.fieldMappings)
+      } else {
+        const model = models.find((candidate) => candidate.entity === initialModel)
+        const sameNameMappings = Object.fromEntries(
+          (model?.fields ?? [])
+            .filter((field) => detail.fields.some((candidate) => candidate.name === field.name))
+            .map((field) => [field.name, field.name]),
+        )
+        setFieldMappings(sameNameMappings)
+      }
     } catch (error) {
-      setNotice({ kind: 'error', message: getErrorMessage(error) })
+      setSchemaDetailError(getErrorMessage(error))
+    } finally {
+      setSchemaDetailLoading(false)
     }
   }
 
-  async function handleCompatibility(schemaId: string, entity: 'Supplier' | 'Product' | 'Order') {
+  function handleModelChange(modelName: string) {
+    setSelectedModel(modelName)
+    setCompatibility(null)
+    setComparisonSelection('')
+    setComparisonError('')
+    const model = models.find((candidate) => candidate.entity === modelName)
+    const sameNameMappings = Object.fromEntries(
+      (model?.fields ?? [])
+        .filter((field) => schemaDetail?.fields.some((candidate) => candidate.name === field.name))
+        .map((field) => [field.name, field.name]),
+    )
+    setFieldMappings(sameNameMappings)
+  }
+
+  function updateFieldMapping(databaseField: string, retailTraceField: string) {
+    setFieldMappings((current) => {
+      const next = { ...current }
+      if (retailTraceField) next[databaseField] = retailTraceField
+      else delete next[databaseField]
+      return next
+    })
+    setCompatibility(null)
+    setComparisonSelection('')
+  }
+
+  function getCurrentMapping(): SchemaMapping {
+    return { modelName: selectedModel, fieldMappings }
+  }
+
+  function getComparisonSelection(schemaId: string): string {
+    return JSON.stringify({ schemaId, ...getCurrentMapping() })
+  }
+
+  async function handleCompatibility() {
+    if (!schemaDetail || !selectedModel) return
+    setCompatibility(null)
+    setComparisonSelection('')
+    setComparisonError('')
     try {
-      setCompatibility(await api.compareSchema(schemaId, entity))
+      const mapping = getCurrentMapping()
+      const report = await api.compareSchema(schemaDetail.schemaId, mapping)
+      setCompatibility(report)
+      setComparisonSelection(getComparisonSelection(schemaDetail.schemaId))
     } catch (error) {
-      setNotice({ kind: 'error', message: getErrorMessage(error) })
+      setComparisonError(getErrorMessage(error))
+    }
+  }
+
+  async function handleSaveMapping() {
+    if (!schemaDetail || !compatibility || !selectedModel) return
+    setMappingSaving(true)
+    setMappingError('')
+    try {
+      const mapping = getCurrentMapping()
+      await api.saveSchemaMapping(schemaDetail.schemaId, mapping)
+      const report = await api.compareSchema(schemaDetail.schemaId, mapping)
+      setCompatibility(report)
+      setComparisonSelection(getComparisonSelection(schemaDetail.schemaId))
+    } catch (error) {
+      setMappingError(getErrorMessage(error))
+    } finally {
+      setMappingSaving(false)
     }
   }
 
@@ -569,11 +681,24 @@ export function AdminDashboard() {
               {schemaUploadError && <div className="notice notice-error" role="alert">{schemaUploadError}</div>}
               {schemaUploadSuccess && <div className="notice notice-success" role="status">{schemaUploadSuccess}</div>}
               <div className="schema-list">
-                {schemas.length === 0 ? (
+                {loading && schemas.length === 0 ? (
+                  <div className="empty-state" role="status">
+                    <LoaderCircle size={20} className="spin" />
+                    <strong>Loading RetailTrace schemas</strong>
+                    <span>Fetching the registered schemas for Verdant’s configured RetailTrace account.</span>
+                  </div>
+                ) : schemaError ? (
+                  <div className="empty-state" role="alert">
+                    <CircleAlert size={20} />
+                    <strong>Could not load schemas</strong>
+                    <span>{schemaError}</span>
+                    <button className="text-button" onClick={() => void refresh()}>Try again</button>
+                  </div>
+                ) : schemas.length === 0 ? (
                   <div className="empty-state">
                     <FileStack size={21} />
-                    <strong>No schemas loaded</strong>
-                    <span>Initialize schemas or refresh the dashboard.</span>
+                    <strong>No registered schemas</strong>
+                    <span>The configured RetailTrace business currently has no schemas.</span>
                   </div>
                 ) : (
                   schemas.map((schema) => (
@@ -595,10 +720,23 @@ export function AdminDashboard() {
               </div>
               <div className="panel-footnote">
                 <span className="mini-dot green" />
-                Schema IDs are stored in the local IntegrationConfig row.
+                Schemas are fetched from RetailTrace using Verdant’s server-side business API key.
               </div>
             </section>
 
+            {schemaDetailLoading && (
+              <section className="panel retry-panel" role="status">
+                <LoaderCircle size={20} className="spin" /> Loading selected schema details…
+              </section>
+            )}
+            {schemaDetailError && (
+              <section className="panel retry-panel" role="alert">
+                <div className="notice notice-error">
+                  <CircleAlert size={18} />
+                  <span>{schemaDetailError}</span>
+                </div>
+              </section>
+            )}
             {schemaDetail && (
               <section className="panel retry-panel">
                 <div className="panel-header">
@@ -621,31 +759,91 @@ export function AdminDashboard() {
                     </div>
                   ))}
                 </div>
-                <div className="compatibility-actions">
-                  {(['Supplier', 'Product', 'Order'] as const).map((entity) => (
-                    <button
-                      key={entity}
-                      className="button button-secondary"
-                      onClick={() => void handleCompatibility(schemaDetail.schemaId, entity)}
-                    >
-                      Compare {entity}
-                    </button>
-                  ))}
+                <div className="mapping-editor">
+                  <div className="eyebrow muted-eyebrow">DATABASE COMPATIBILITY</div>
+                  {modelsError ? (
+                    <p className="notice notice-error" role="alert">Could not load Prisma models: {modelsError}</p>
+                  ) : (
+                    <>
+                      <label className="mapping-model-picker">
+                        Corresponding Prisma model
+                        <select
+                          value={selectedModel}
+                          onChange={(event) => handleModelChange(event.target.value)}
+                        >
+                          <option value="">Select a database model…</option>
+                          {models.map((model) => (
+                            <option key={model.entity} value={model.entity}>{model.entity}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {!selectedModel && (
+                        <p className="mapping-unconfigured">No model mapping is configured. Select the corresponding Prisma model to compare.</p>
+                      )}
+                      {selectedModel && models.find((model) => model.entity === selectedModel) && (
+                        <div className="mapping-fields">
+                          {(models.find((model) => model.entity === selectedModel)?.fields ?? []).map((field) => (
+                            <label className="mapping-field-row" key={field.name}>
+                              <span>
+                                <strong>{field.name}</strong>
+                                <small>{field.databaseType}{field.required ? ' · required' : ' · optional'}{field.reference ? ` · relation to ${field.reference.targetEntity}` : ''}</small>
+                              </span>
+                              <select
+                                aria-label={`Map Prisma ${field.name} to RetailTrace field`}
+                                value={fieldMappings[field.name] ?? ''}
+                                onChange={(event) => updateFieldMapping(field.name, event.target.value)}
+                              >
+                                <option value="">Not mapped</option>
+                                {schemaDetail.fields.map((schemaField) => (
+                                  <option key={schemaField.name} value={schemaField.name}>
+                                    {schemaField.name} ({schemaField.type}{schemaField.multiple ? '[]' : ''})
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                      <div className="compatibility-actions">
+                        <button
+                          className="button button-secondary"
+                          disabled={!selectedModel}
+                          onClick={() => void handleCompatibility()}
+                        >
+                          Compare mapping
+                        </button>
+                        <span className="mapping-status">
+                          {compatibility?.configurationSaved ? 'Saved mapping' : 'Preview only · not configured'}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                  {comparisonError && <p className="notice notice-error" role="alert">{comparisonError}</p>}
+                  {mappingError && <p className="notice notice-error" role="alert">{mappingError}</p>}
                 </div>
                 {compatibility && compatibility.schemaId === schemaDetail.schemaId && (
                   <div className="compatibility-report">
                     <strong>{compatibility.entity} compatibility: {compatibility.score}%</strong>
-                    <small>{compatibility.compatibleFieldCount} of {compatibility.mappedFieldCount} mapped fields matched.</small>
+                    <small>{compatibility.compatibleFieldCount} of {compatibility.mappedFieldCount} database fields matched. Score = matched DB fields ÷ all DB fields × 100.</small>
                     {compatibility.warnings.map((warning) => <p key={warning}>{warning}</p>)}
                     <div className="compatibility-table">
                       {compatibility.rows.map((row, index) => (
                         <div className="compatibility-row" key={`${row.databaseField}-${row.retailTraceField}-${index}`}>
                           <span>{row.databaseField || '—'} · {row.databaseType || '—'}</span>
                           <span>{row.retailTraceField || '—'} · {row.retailTraceType || '—'}</span>
-                          <strong>{row.status}</strong>
+                          <strong title={row.detail}>{row.status}<small>{row.detail}</small></strong>
                         </div>
                       ))}
                     </div>
+                    {comparisonSelection === getComparisonSelection(schemaDetail.schemaId) && (
+                      <button
+                        className="button button-primary"
+                        disabled={mappingSaving || compatibility.configurationSaved}
+                        onClick={() => void handleSaveMapping()}
+                      >
+                        {mappingSaving ? 'Saving mapping…' : compatibility.configurationSaved ? 'Mapping saved' : 'Save this mapping'}
+                      </button>
+                    )}
                   </div>
                 )}
               </section>

@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   buildCompatibilityReport,
   findCompatibleSchema,
+  parsePrismaModels,
   schemaFieldsMatch,
   type RetailTraceSchemaReader,
 } from "../services/schema-compatibility.service.js";
@@ -49,6 +50,25 @@ function createReader(schemas: RetailTraceSchema[]): RetailTraceSchemaReader {
 }
 
 describe("RetailTrace schema compatibility", () => {
+  it("reads actual Prisma fields and compares renamed fields only with explicit mappings", () => {
+    const [model] = parsePrismaModels(`model Supplier {\n  id String @id\n  name String\n  email String?\n}`);
+    assert.deepEqual(model?.fields, [
+      { name: "id", databaseType: "String", required: true },
+      { name: "name", databaseType: "String", required: true },
+      { name: "email", databaseType: "String", required: false },
+    ]);
+    const schema = createSchema("supplier-schema", "Supplier", [
+      { name: "supplierName", type: "string", required: true },
+      { name: "email", type: "string", required: false },
+    ]);
+    const unmapped = buildCompatibilityReport(model!, schema, {}, {}, false);
+    assert.equal(unmapped.rows.find((row) => row.databaseField === "name")?.status, "Missing in RetailTrace");
+    const mapped = buildCompatibilityReport(model!, schema, { name: "supplierName" }, {}, false);
+    assert.equal(mapped.rows.find((row) => row.databaseField === "name")?.status, "Matched");
+    assert.equal(mapped.configurationSaved, false);
+    assert.ok(mapped.warnings.some((warning) => warning.includes("unsaved mapping preview")));
+  });
+
   it("builds a read-only database compatibility report with scores and warnings", () => {
     const schema = createSchema("supplier-1", "Supplier", [
       { name: "name", type: "string", required: true },
@@ -56,7 +76,22 @@ describe("RetailTrace schema compatibility", () => {
       { name: "country", type: "string", required: true },
       { name: "active", type: "boolean", required: true },
     ]);
-    const report = buildCompatibilityReport("Supplier", schema);
+    const report = buildCompatibilityReport(
+      {
+        entity: "Supplier",
+        fields: [
+          { name: "name", databaseType: "String", required: true },
+          { name: "email", databaseType: "String", required: true },
+          { name: "country", databaseType: "String", required: true },
+          { name: "active", databaseType: "Boolean", required: true },
+          { name: "createdAt", databaseType: "DateTime", required: true },
+        ],
+      },
+      schema,
+      {},
+      {},
+      false,
+    );
 
     assert.equal(report.score, 80);
     assert.equal(report.compatibleFieldCount, 4);

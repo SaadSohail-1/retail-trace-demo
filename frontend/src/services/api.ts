@@ -51,6 +51,23 @@ export interface SchemaDetail extends SchemaSummary {
   schema: Record<string, unknown>;
 }
 
+export interface DatabaseField {
+  name: string;
+  databaseType: string;
+  required: boolean;
+  reference?: { targetEntity: string };
+}
+
+export interface DatabaseModel {
+  entity: string;
+  fields: DatabaseField[];
+}
+
+export interface SchemaMapping {
+  modelName: string;
+  fieldMappings: Record<string, string>;
+}
+
 export interface CompatibilityRow {
   databaseField: string;
   databaseType: string;
@@ -69,6 +86,7 @@ export interface CompatibilityReport {
   score: number;
   compatibleFieldCount: number;
   mappedFieldCount: number;
+  configurationSaved: boolean;
   rows: CompatibilityRow[];
   warnings: string[];
 }
@@ -381,6 +399,28 @@ export const api = {
     return response.data.data;
   },
 
+  async getSchemaMapping(schemaId: string): Promise<SchemaMapping | null> {
+    const response = await client.get<ApiResponse<SchemaMapping | null>>(
+      `/api/integration/schemas/${encodeURIComponent(schemaId)}/mapping`,
+    );
+    return response.data.data;
+  },
+
+  async saveSchemaMapping(schemaId: string, mapping: SchemaMapping): Promise<SchemaMapping> {
+    const response = await client.put<ApiResponse<SchemaMapping>>(
+      `/api/integration/schemas/${encodeURIComponent(schemaId)}/mapping`,
+      mapping,
+    );
+    return response.data.data;
+  },
+
+  async getDatabaseModels(): Promise<DatabaseModel[]> {
+    const response = await client.get<ApiResponse<DatabaseModel[]>>(
+      "/api/integration/database-models",
+    );
+    return response.data.data;
+  },
+
   async uploadSchema(definition: { name: string; fields: SchemaField[] }): Promise<SchemaSummary> {
     const response = await client.post<ApiResponse<SchemaSummary>>(
       "/api/integration/schemas",
@@ -389,9 +429,10 @@ export const api = {
     return response.data.data;
   },
 
-  async compareSchema(schemaId: string, entity: "Supplier" | "Product" | "Order"): Promise<CompatibilityReport> {
-    const response = await client.get<ApiResponse<CompatibilityReport>>(
-      `/api/integration/schemas/${encodeURIComponent(schemaId)}/compare/${encodeURIComponent(entity)}`,
+  async compareSchema(schemaId: string, mapping: SchemaMapping): Promise<CompatibilityReport> {
+    const response = await client.post<ApiResponse<CompatibilityReport>>(
+      `/api/integration/schemas/${encodeURIComponent(schemaId)}/compare`,
+      mapping,
     );
     return response.data.data;
   },
