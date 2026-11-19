@@ -203,8 +203,11 @@ integration operations.
 The frontend API client uses same-origin `/api` requests by default, and Vite
 proxies them to `http://localhost:5001`. Set `BACKEND_PROXY_TARGET` only when
 the local backend uses another address. `VITE_API_BASE_URL` remains available
-for deployments with a separate API origin, but should be unset when the site
-is opened through a phone/tunnel. Set `PUBLIC_APP_URL` in the backend
+for the storefront/admin API when using a separate API origin. Public QR
+verification uses same-origin `/api` independently; set
+`VITE_PUBLIC_API_BASE_URL` only when its API is hosted on another origin. Leave
+both overrides unset when the site is opened through a phone/tunnel so the
+public endpoints use the Vite proxy. Set `PUBLIC_APP_URL` in the backend
 environment to the public HTTPS storefront origin to enable receipt QR links.
 The RetailTrace API key must remain server-side.
 

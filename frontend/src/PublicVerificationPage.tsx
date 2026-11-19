@@ -14,6 +14,7 @@ import {
 import { useEffect, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { api, type PublicOrderDetails, type PublicVerificationResult } from "./services/api";
+import { publicVerificationTitle } from "./public-verification";
 import "./PublicVerificationPage.css";
 
 type StageStatus =
@@ -80,19 +81,6 @@ function fallbackResult(
     },
     explanation,
   };
-}
-
-function resultTitle(status: PublicVerificationResult["status"]) {
-  switch (status) {
-    case "VERIFIED":
-      return "Blockchain record verified";
-    case "PENDING":
-      return "Blockchain publication is pending";
-    case "UNAVAILABLE":
-      return "Verification temporarily unavailable";
-    case "NOT_VERIFIED":
-      return "We could not verify this order";
-  }
 }
 
 function resultMessage(result: PublicVerificationResult) {
@@ -375,7 +363,7 @@ export default function PublicVerificationPage() {
                 {result.status === "VERIFIED" ? <CheckCircle2 size={26} /> : <AlertCircle size={25} />}
               </span>
               <p className="public-verification-eyebrow">{isReceiptView ? "VERIFICATION RECEIPT" : "FINAL RESULT"}</p>
-              <h2>{resultTitle(result.status)}</h2>
+              <h2>{publicVerificationTitle(result.status)}</h2>
               <p className="public-verification-message">{resultMessage(result)}</p>
               <p className="public-verification-caveat">
                 Blockchain integrity confirms the published commitment matches the checked record.
@@ -499,7 +487,7 @@ export default function PublicVerificationPage() {
                       </a>
                     ) : (
                       <p className="independent-link-unavailable">
-                        Independent verification is not configured for this deployment.
+                        <a href="https://retail-trace.vercel.app/">Visit RetailTrace</a>
                       </p>
                     )}
                   </div>
