@@ -192,7 +192,10 @@ function parseVerification(value: unknown): VerificationResult {
 const client = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "",
   timeout: 15_000,
-  headers: { Accept: "application/json" },
+  headers: {
+    Accept: "application/json",
+    "ngrok-skip-browser-warning": "true",
+  },
 });
 
 export function getErrorMessage(error: unknown): string {
