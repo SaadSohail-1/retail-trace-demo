@@ -1403,6 +1403,84 @@ button.schema-row {
   }
 }
 
+/* Schema upload review panel. */
+.schema-import-preview {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 16px;
+  border: 1px solid #dce6d6;
+  border-radius: 11px;
+  background: linear-gradient(145deg, #f6f9f2, #fff 70%);
+}
+
+.schema-import-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.schema-import-heading > div { display: grid; gap: 5px; }
+.schema-import-heading strong { color: #324a38; font-size: 14px; }
+.schema-import-preview > p { margin: 0; color: #657469; font-size: 13px; line-height: 1.5; }
+
+.schema-import-name {
+  display: grid;
+  max-width: 480px;
+  gap: 6px;
+  color: #405445;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.schema-import-name input {
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid #d5dfd0;
+  border-radius: 7px;
+  background: #fff;
+  color: #263b2e;
+  font: inherit;
+  font-size: 13px;
+}
+
+.schema-import-fields { display: grid; gap: 7px; }
+
+.schema-import-field {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) auto auto;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 9px 11px;
+  border: 1px solid #e4eae0;
+  border-radius: 8px;
+  background: #fff;
+  color: #374b3c;
+  font-size: 13px;
+}
+
+.schema-import-field > strong { font-family: var(--mono); }
+.schema-import-field > span:not(.schema-import-required) { color: #5f765b; }
+.schema-import-required { color: #68776c; font-size: 12px; }
+.schema-import-field small, .schema-import-field code { grid-column: 1 / -1; color: #68766b; font-size: 12px; overflow-wrap: anywhere; }
+.schema-import-field code { padding: 5px 7px; border-radius: 5px; background: #f5f7f3; font-family: var(--mono); }
+
+.schema-import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.schema-import-actions > span { color: #758177; font-size: 12px; }
+
+@media (max-width: 600px) {
+  .schema-import-field { grid-template-columns: minmax(0, 1fr) auto; }
+  .schema-import-field > strong { grid-column: 1 / -1; }
+  .schema-import-required { justify-self: end; }
+}
+
 /* A more readable dashboard type scale and a focused schema comparison dialog. */
 .nav-item { font-size: 14px; }
 .workspace-label, .sidebar-footer, .last-updated { font-size: 12px; }

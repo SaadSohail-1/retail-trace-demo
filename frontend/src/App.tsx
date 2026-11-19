@@ -34,6 +34,7 @@ import {
   type DatabaseModel,
   type SchemaMapping,
 } from './services/api'
+import { importSchemaDefinition } from './utils/schema-import'
 import './App.css'
 
 type Notice = {
@@ -48,6 +49,12 @@ type BusinessSyncRow = {
   label: string
   entityType: string
   synchronization: SyncResult | null
+}
+
+type SchemaUploadPreview = {
+  fileName: string
+  name: string
+  fields: SchemaField[]
 }
 
 function synchronizationLabel(sync: SyncResult | null): {
@@ -116,6 +123,8 @@ export function AdminDashboard() {
   const [compatibility, setCompatibility] = useState<CompatibilityReport | null>(null)
   const [schemaUploadError, setSchemaUploadError] = useState('')
   const [schemaUploadSuccess, setSchemaUploadSuccess] = useState('')
+  const [schemaUploadPreview, setSchemaUploadPreview] = useState<SchemaUploadPreview | null>(null)
+  const [schemaUploading, setSchemaUploading] = useState(false)
   const [schemaCreationModel, setSchemaCreationModel] = useState('')
   const [schemaCreationName, setSchemaCreationName] = useState('')
   const [schemaCreationError, setSchemaCreationError] = useState('')
@@ -494,23 +503,10 @@ export function AdminDashboard() {
     if (!file) return
     setSchemaUploadError('')
     setSchemaUploadSuccess('')
+    setSchemaUploadPreview(null)
     try {
-      const parsed: unknown = JSON.parse(await file.text())
-      if (
-        !parsed ||
-        typeof parsed !== 'object' ||
-        Array.isArray(parsed) ||
-        !('name' in parsed) ||
-        typeof parsed.name !== 'string' ||
-        !('fields' in parsed) ||
-        !Array.isArray(parsed.fields)
-      ) {
-        throw new Error('Expected RetailTrace format: { "name": "...", "fields": [...] }')
-      }
-      const fields = parsed.fields as SchemaDetail['fields']
-      const created = await api.uploadSchema({ name: parsed.name, fields })
-      setSchemaUploadSuccess(`Schema "${created.name}" registered as version ${created.version}.`)
-      await refresh()
+      const imported = importSchemaDefinition(JSON.parse(await file.text()) as unknown)
+      setSchemaUploadPreview({ fileName: file.name, name: imported.name, fields: imported.fields })
     } catch (error) {
       setSchemaUploadError(
         error instanceof SyntaxError
@@ -519,6 +515,27 @@ export function AdminDashboard() {
       )
     } finally {
       event.currentTarget.value = ''
+    }
+  }
+
+  async function handleRegisterUploadedSchema() {
+    if (!schemaUploadPreview) return
+    const name = schemaUploadPreview.name.trim()
+    if (!name) {
+      setSchemaUploadError('Enter a schema name before registering this JSON Schema.')
+      return
+    }
+    setSchemaUploading(true)
+    setSchemaUploadError('')
+    try {
+      const created = await api.uploadSchema({ name, fields: schemaUploadPreview.fields })
+      setSchemaUploadPreview(null)
+      setSchemaUploadSuccess(`Schema “${created.name}” registered as version ${created.version}.`)
+      await refresh()
+    } catch (error) {
+      setSchemaUploadError(getErrorMessage(error))
+    } finally {
+      setSchemaUploading(false)
     }
   }
 
@@ -756,6 +773,46 @@ export function AdminDashboard() {
                   onChange={(event) => void handleSchemaUpload(event)}
                 />
               </label>
+              {schemaUploadPreview && (
+                <div className="schema-import-preview">
+                  <div className="schema-import-heading">
+                    <div>
+                      <div className="eyebrow muted-eyebrow">REVIEW BEFORE REGISTERING</div>
+                      <strong>{schemaUploadPreview.fileName}</strong>
+                    </div>
+                    <button className="text-button" type="button" onClick={() => { setSchemaUploadPreview(null); setSchemaUploadError('') }}>Cancel</button>
+                  </div>
+                  <p>RetailTrace will validate records against these converted fields after registration.</p>
+                  <label className="schema-import-name">
+                    Schema name
+                    <input
+                      value={schemaUploadPreview.name}
+                      onChange={(event) => setSchemaUploadPreview((current) => current ? { ...current, name: event.target.value } : current)}
+                      placeholder="Enter a name for this schema"
+                    />
+                  </label>
+                  <div className="schema-import-fields">
+                    {schemaUploadPreview.fields.map((field) => (
+                      <div className="schema-import-field" key={field.name}>
+                        <strong>{field.name}</strong>
+                        <span>{field.type}{field.type === 'reference' && field.multiple ? '[]' : ''}</span>
+                        <span className="schema-import-required">{field.required ? 'Required' : 'Optional'}</span>
+                        {field.type === 'reference' && <small>Target schema: {field.targetSchemaId}</small>}
+                        {field.description && <small>{field.description}</small>}
+                        {field.constraints && <code>{JSON.stringify(field.constraints)}</code>}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="schema-import-actions">
+                    <button className="button button-primary" type="button" disabled={schemaUploading} onClick={() => void handleRegisterUploadedSchema()}>
+                      {schemaUploading ? <LoaderCircle size={16} className="spin" /> : <FileStack size={16} />}
+                      {schemaUploading ? 'Registering…' : 'Register schema'}
+                    </button>
+                    <span>Registration creates a new schema version; it does not replace existing versions.</span>
+                  </div>
+                </div>
+              )}
+              {schemaUploadError && <div className="notice notice-error" role="alert">{schemaUploadError}</div>}
               <div className="schema-model-creator">
                 <div className="eyebrow muted-eyebrow">CREATE FROM YOUR DATABASE</div>
                 <p className="panel-description">
@@ -803,7 +860,6 @@ export function AdminDashboard() {
                   </>
                 )}
               </div>
-              {schemaUploadError && <div className="notice notice-error" role="alert">{schemaUploadError}</div>}
               {schemaUploadSuccess && <div className="notice notice-success" role="status">{schemaUploadSuccess}</div>}
               <div className="schema-list">
                 {loading && schemas.length === 0 ? (

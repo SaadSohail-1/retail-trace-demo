@@ -44,6 +44,9 @@ export interface SchemaField {
   required: boolean;
   targetSchemaId?: string;
   multiple?: boolean;
+  title?: string;
+  description?: string;
+  constraints?: Record<string, unknown>;
 }
 
 export interface SchemaDetail extends SchemaSummary {
