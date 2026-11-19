@@ -130,6 +130,7 @@ export function AdminDashboard() {
   const [fieldMappings, setFieldMappings] = useState<Record<string, string>>({})
   const [comparisonSelection, setComparisonSelection] = useState('')
   const [mappingSaving, setMappingSaving] = useState(false)
+  const [mappingConfigured, setMappingConfigured] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -316,6 +317,7 @@ export function AdminDashboard() {
 
   async function handleSchemaDetail(schemaId: string) {
     setSchemaDetail(null)
+    setMappingConfigured(false)
     setCompatibility(null)
     setComparisonSelection('')
     setSchemaDetailError('')
@@ -328,6 +330,7 @@ export function AdminDashboard() {
         api.getSchemaMapping(schemaId),
       ])
       setSchemaDetail(detail)
+      setMappingConfigured(savedMapping !== null)
       const exactModel = models.find(
         (model) => model.entity.toLowerCase() === detail.name.toLowerCase(),
       )
@@ -420,6 +423,7 @@ export function AdminDashboard() {
 
   function handleModelChange(modelName: string) {
     setSelectedModel(modelName)
+    setMappingConfigured(false)
     setCompatibility(null)
     setComparisonSelection('')
     setComparisonError('')
@@ -433,6 +437,7 @@ export function AdminDashboard() {
   }
 
   function updateFieldMapping(databaseField: string, retailTraceField: string) {
+    setMappingConfigured(false)
     setFieldMappings((current) => {
       const next = { ...current }
       if (retailTraceField) next[databaseField] = retailTraceField
@@ -473,6 +478,7 @@ export function AdminDashboard() {
     try {
       const mapping = getCurrentMapping()
       await api.saveSchemaMapping(schemaDetail.schemaId, mapping)
+      setMappingConfigured(true)
       const report = await api.compareSchema(schemaDetail.schemaId, mapping)
       setCompatibility(report)
       setComparisonSelection(getComparisonSelection(schemaDetail.schemaId))
@@ -857,47 +863,58 @@ export function AdminDashboard() {
               </section>
             )}
             {schemaDetail && (
-              <section className="panel retry-panel">
+              <div className="schema-dialog-backdrop" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape') setSchemaDetail(null) }} onMouseDown={(event) => { if (event.target === event.currentTarget) setSchemaDetail(null) }}>
+              <section className="schema-dialog" role="dialog" aria-modal="true" aria-labelledby="schema-dialog-title">
                 <div className="panel-header">
                   <div>
-                    <div className="eyebrow muted-eyebrow">SCHEMA DETAIL</div>
-                    <h2>{schemaDetail.name} · v{schemaDetail.version}</h2>
+                    <div className="eyebrow muted-eyebrow">RETAILTRACE SCHEMA</div>
+                    <h2 id="schema-dialog-title">{schemaDetail.name} <span>Version {schemaDetail.version}</span></h2>
                   </div>
-                  <button className="text-button" onClick={() => setSchemaDetail(null)}>Close</button>
+                  <button className="schema-dialog-close" onClick={() => setSchemaDetail(null)} aria-label="Close schema details">Close</button>
                 </div>
-                <code className="schema-detail-id">{schemaDetail.schemaId}</code>
-                <div className="schema-field-list">
+                <p className="schema-dialog-description">RetailTrace validates these {schemaDetail.fields.length} fields when Verdant publishes records using this schema.</p>
+                <code className="schema-detail-id">Schema ID · {schemaDetail.schemaId}</code>
+                <div className="schema-field-list" aria-label="RetailTrace schema fields">
                   {schemaDetail.fields.map((field) => (
                     <div className="schema-field-row" key={field.name}>
                       <strong>{field.name}</strong>
-                      <span>{field.type}{field.multiple ? '[]' : ''}</span>
-                      <span>{field.required ? 'Required' : 'Optional'}</span>
+                      <span className="schema-type-pill">{field.type}{field.multiple ? '[]' : ''}</span>
+                      <span className={`required-pill ${field.required ? 'is-required' : ''}`}>{field.required ? 'Required' : 'Optional'}</span>
                       {field.type === 'reference' && (
-                        <code title={field.targetSchemaId}>Target: {field.targetSchemaId ? shortId(field.targetSchemaId) : 'missing'}</code>
+                        <code title={field.targetSchemaId}>References schema {field.targetSchemaId ? shortId(field.targetSchemaId) : 'not configured'}</code>
                       )}
                     </div>
                   ))}
                 </div>
                 <div className="mapping-editor">
-                  <div className="eyebrow muted-eyebrow">DATABASE COMPATIBILITY</div>
+                  <div className="mapping-section-heading">
+                    <div>
+                      <div className="eyebrow muted-eyebrow">DATABASE COMPARISON</div>
+                      <h3>Compare with Verdant’s database</h3>
+                    </div>
+                    <span className={`mapping-state ${compatibility?.configurationSaved ? 'is-saved' : ''}`}>
+                      {compatibility ? compatibility.configurationSaved ? 'Mapping saved' : 'Preview · not saved' : mappingConfigured ? 'Saved · not rechecked' : 'Not compared'}
+                    </span>
+                  </div>
+                  <p className="mapping-explainer">Choose the Prisma model this RetailTrace schema represents, review the field matches, then save the association if it’s correct. Comparing and saving a mapping do not change either schema or any records.</p>
                   {modelsError ? (
                     <p className="notice notice-error" role="alert">Could not load Prisma models: {modelsError}</p>
                   ) : (
                     <>
                       <label className="mapping-model-picker">
-                        Corresponding Prisma model
+                        Business database model
                         <select
                           value={selectedModel}
                           onChange={(event) => handleModelChange(event.target.value)}
                         >
-                          <option value="">Select a database model…</option>
+                          <option value="">Choose a Prisma model…</option>
                           {models.map((model) => (
                             <option key={model.entity} value={model.entity}>{model.entity}</option>
                           ))}
                         </select>
                       </label>
                       {!selectedModel && (
-                        <p className="mapping-unconfigured">No model mapping is configured. Select the corresponding Prisma model to compare.</p>
+                        <p className="mapping-unconfigured">No model selected yet. Choose the business table this schema should be compared with.</p>
                       )}
                       {selectedModel && models.find((model) => model.entity === selectedModel) && (
                         <div className="mapping-fields">
@@ -929,11 +946,9 @@ export function AdminDashboard() {
                           disabled={!selectedModel}
                           onClick={() => void handleCompatibility()}
                         >
-                          Compare mapping
+                          Compare fields
                         </button>
-                        <span className="mapping-status">
-                          {compatibility?.configurationSaved ? 'Saved mapping' : 'Preview only · not configured'}
-                        </span>
+                        <span className="mapping-status">A comparison is a read-only preview.</span>
                       </div>
                     </>
                   )}
@@ -942,15 +957,23 @@ export function AdminDashboard() {
                 </div>
                 {compatibility && compatibility.schemaId === schemaDetail.schemaId && (
                   <div className="compatibility-report">
-                    <strong>{compatibility.entity} compatibility: {compatibility.score}%</strong>
-                    <small>{compatibility.compatibleFieldCount} of {compatibility.mappedFieldCount} database fields matched. Score = matched DB fields ÷ all DB fields × 100.</small>
-                    {compatibility.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+                    <div className="compatibility-score-card">
+                      <span className="compatibility-score">{compatibility.score}<small>%</small></span>
+                      <div>
+                        <strong>{compatibility.compatibleFieldCount} of {compatibility.mappedFieldCount} database fields are compatible</strong>
+                        <p>The percentage is the share of Prisma scalar fields that match by name or explicit mapping, type, required status, and reference target.</p>
+                        <span className={`mapping-state ${compatibility.configurationSaved ? 'is-saved' : ''}`}>{compatibility.configurationSaved ? 'Saved association' : 'Preview only · not saved'}</span>
+                      </div>
+                    </div>
+                    {!compatibility.configurationSaved && <p className="mapping-save-explainer">Save records which database model and field names correspond to this RetailTrace schema. It does not edit either schema.</p>}
+                    {compatibility.warnings.filter((warning) => !warning.startsWith('This is an unsaved mapping preview') && !warning.startsWith('The score covers matched Prisma scalar fields only')).map((warning) => <p className="compatibility-warning" key={warning}>{warning}</p>)}
                     <div className="compatibility-table">
+                      <div className="compatibility-table-head"><span>Prisma field</span><span>RetailTrace field</span><span>Result</span></div>
                       {compatibility.rows.map((row, index) => (
                         <div className="compatibility-row" key={`${row.databaseField}-${row.retailTraceField}-${index}`}>
-                          <span>{row.databaseField || '—'} · {row.databaseType || '—'}</span>
-                          <span>{row.retailTraceField || '—'} · {row.retailTraceType || '—'}</span>
-                          <strong title={row.detail}>{row.status}<small>{row.detail}</small></strong>
+                          <span><strong>{row.databaseField || '—'}</strong><small>{row.databaseType || 'Not mapped'}</small></span>
+                          <span><strong>{row.retailTraceField || '—'}</strong><small>{row.retailTraceType || 'Not mapped'}</small></span>
+                          <span className="compatibility-result"><strong>{row.status}</strong><small>{row.detail}</small></span>
                         </div>
                       ))}
                     </div>
@@ -960,12 +983,13 @@ export function AdminDashboard() {
                         disabled={mappingSaving || compatibility.configurationSaved}
                         onClick={() => void handleSaveMapping()}
                       >
-                        {mappingSaving ? 'Saving mapping…' : compatibility.configurationSaved ? 'Mapping saved' : 'Save this mapping'}
+                        {mappingSaving ? 'Saving association…' : compatibility.configurationSaved ? 'Association saved' : 'Save model association'}
                       </button>
                     )}
                   </div>
                 )}
               </section>
+              </div>
             )}
 
             <section className="panel retry-panel">
