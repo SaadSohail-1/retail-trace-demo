@@ -30,10 +30,60 @@ if (!retailTraceApiKey) {
   throw new Error("RETAILTRACE_API_KEY is required");
 }
 
+export function getPublicAppUrl(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new URL(value);
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  const mappedIpv4 = hostname.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  const ipv4 = (mappedIpv4?.[1] ?? hostname).split(".").map(Number);
+  const isPrivateIpv4 =
+    ipv4.length === 4 &&
+    ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) &&
+    (ipv4[0] === 0 ||
+      ipv4[0] === 10 ||
+      ipv4[0] === 127 ||
+      (ipv4[0] === 169 && ipv4[1] === 254) ||
+      (ipv4[0] === 172 && ipv4[1]! >= 16 && ipv4[1]! <= 31) ||
+      (ipv4[0] === 192 && ipv4[1] === 168) ||
+      (ipv4[0] === 100 && ipv4[1]! >= 64 && ipv4[1]! <= 127));
+  const isPrivateIpv6 =
+    hostname === "::1" ||
+    hostname.startsWith("fc") ||
+    hostname.startsWith("fd") ||
+    /^fe[89ab]/.test(hostname);
+
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== "/" ||
+    parsed.search ||
+    parsed.hash ||
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname.endsWith(".local") ||
+    hostname.endsWith(".lan") ||
+    hostname.endsWith(".internal") ||
+    hostname.endsWith(".test") ||
+    hostname.endsWith(".example") ||
+    hostname.endsWith(".invalid") ||
+    isPrivateIpv4 ||
+    isPrivateIpv6
+  ) {
+    throw new Error("PUBLIC_APP_URL must be an HTTPS public origin, not a local or private address");
+  }
+
+  return parsed.origin;
+}
+
 export const env = {
   port,
   databaseUrl,
   frontendOrigin: process.env.FRONTEND_ORIGIN ?? "http://localhost:5173",
+  publicAppUrl: getPublicAppUrl(process.env.PUBLIC_APP_URL),
   retailTraceBaseUrl: retailTraceBaseUrl.replace(/\/+$/, ""),
   retailTraceApiKey,
 };

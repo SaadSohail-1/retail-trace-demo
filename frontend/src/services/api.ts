@@ -99,6 +99,7 @@ export interface ProductView {
 }
 
 export interface OrderView {
+  verificationUrl?: string | null;
   order: {
     id: string;
     customerName: string;
@@ -117,6 +118,55 @@ export interface VerificationResult {
   recordId: string;
   verified: boolean;
   transactionId: string | null;
+}
+
+export interface PublicVerificationResult {
+  status: "VERIFIED" | "NOT_VERIFIED" | "PENDING" | "UNAVAILABLE";
+  orderReference?: string;
+  publicationStatus?: "PENDING" | "CONFIRMED" | "FAILED" | null;
+  transactionId?: string | null;
+}
+
+function isPublicVerificationResult(value: unknown): value is PublicVerificationResult {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("status" in value) ||
+    (value.status !== "VERIFIED" &&
+      value.status !== "NOT_VERIFIED" &&
+      value.status !== "PENDING" &&
+      value.status !== "UNAVAILABLE") ||
+    ("orderReference" in value && typeof value.orderReference !== "string") ||
+    ("publicationStatus" in value &&
+      value.publicationStatus !== null &&
+      value.publicationStatus !== "PENDING" &&
+      value.publicationStatus !== "CONFIRMED" &&
+      value.publicationStatus !== "FAILED") ||
+    ("transactionId" in value &&
+      value.transactionId !== null &&
+      typeof value.transactionId !== "string")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function parsePublicVerification(value: unknown): PublicVerificationResult {
+  if (!isPublicVerificationResult(value)) {
+    throw new Error("Verdant returned an invalid public verification response.");
+  }
+  return {
+    status: value.status,
+    ...(value.orderReference !== undefined
+      ? { orderReference: value.orderReference }
+      : {}),
+    ...(value.publicationStatus !== undefined
+      ? { publicationStatus: value.publicationStatus }
+      : {}),
+    ...(value.transactionId !== undefined
+      ? { transactionId: value.transactionId }
+      : {}),
+  };
 }
 
 function parseVerification(value: unknown): VerificationResult {
@@ -140,7 +190,7 @@ function parseVerification(value: unknown): VerificationResult {
 }
 
 const client = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5001",
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? "",
   timeout: 15_000,
   headers: { Accept: "application/json" },
 });
@@ -254,5 +304,12 @@ export const api = {
       `/api/integration/transactions/${encodeURIComponent(transactionId)}/verify`,
     );
     return parseVerification(response.data?.data);
+  },
+
+  async verifyPublicRecord(recordId: string): Promise<PublicVerificationResult> {
+    const response = await client.get<ApiResponse<unknown>>(
+      `/api/public/verify/${encodeURIComponent(recordId)}`,
+    );
+    return parsePublicVerification(response.data?.data);
   },
 };

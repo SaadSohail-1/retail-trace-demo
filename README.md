@@ -23,6 +23,7 @@ on the server.
 | Supplier, Product, and Order synchronization | Automated tests cover scalar-reference and publication contracts |
 | Failed synchronization and retry | Uncertain submissions are reconciled before any retry can submit again |
 | Record and transaction verification | Uses RetailTrace record verification; transaction lookup is composed from record listing because no transaction endpoint exists |
+| Public QR verification | Rate-limited Verdant endpoint and public verification page; phone/tunnel end-to-end testing remains manual |
 | Supplier create/list/detail API and automatic synchronization | Implemented and API-tested |
 | Product create/list/detail API and automatic synchronization | Implemented and API-tested |
 | Order create/list/detail API and multiple-Product synchronization | Implemented; one scalar RetailTrace reference is emitted per OrderItem |
@@ -123,14 +124,14 @@ returns the failed sync state for later retry.
 | PostgreSQL 16 | Business-owned relational database, run locally with Docker Compose |
 | Prisma ORM 7.10.1 | Database schema, migrations, generated typed client, and queries |
 | Prisma PostgreSQL adapter + `pg` | PostgreSQL driver used by Prisma 7 |
-| Axios | Server-side RetailTrace REST client; it is also installed in the frontend but not currently used there |
+| Axios | Server-side RetailTrace REST client and frontend Verdant API client |
 | `dotenv` | Loads backend environment variables from `backend/.env` |
 | `cors` | Allows the configured Vite origin to call the business backend |
 | ESLint | Frontend lint configuration |
+| `qrcode.react` | Generates QR codes for public order verification links |
 
-React Router is installed in the frontend but no application routes have been
-created yet. Package versions are defined by the respective package manifests
-and lockfiles.
+React Router provides the storefront, admin, and public verification routes.
+Package versions are defined by the respective package manifests and lockfiles.
 
 ## Project structure
 
@@ -199,9 +200,18 @@ checkout yet. Consequently, the dashboard cannot create new business records
 to publish; it displays existing RetailTrace records and supports the existing
 integration operations.
 
-The frontend API client uses `VITE_API_BASE_URL` when set and otherwise calls
-`http://localhost:5001`. Only the Verdant Store API base URL belongs in frontend
-configuration; `RETAILTRACE_API_KEY` must remain in the backend environment.
+The frontend API client uses same-origin `/api` requests by default, and Vite
+proxies them to `http://localhost:5001`. Set `BACKEND_PROXY_TARGET` only when
+the local backend uses another address. `VITE_API_BASE_URL` remains available
+for deployments with a separate API origin, but should be unset when the site
+is opened through a phone/tunnel. Set `PUBLIC_APP_URL` in the backend
+environment to the public HTTPS storefront origin to enable receipt QR links.
+The RetailTrace API key must remain server-side.
+
+The order receipt displays a QR code and clickable verification link only when
+RetailTrace confirms publication and returns a transaction ID. `/verify/:recordId`
+calls Verdant's public verification endpoint; it does not expose customer data
+or call RetailTrace from the browser.
 
 ## PostgreSQL and database
 
@@ -292,13 +302,17 @@ DATABASE_URL=postgresql://<database-user>:<database-password>@localhost:5433/ver
 RETAILTRACE_BASE_URL=http://localhost:5000/api
 RETAILTRACE_API_KEY=<active RetailTrace bearer API key>
 FRONTEND_ORIGIN=http://localhost:5173
+PUBLIC_APP_URL=https://your-public-domain.example
 ```
 
 `PORT`, `DATABASE_URL`, `RETAILTRACE_BASE_URL`, and `RETAILTRACE_API_KEY` are
 required by the backend. `FRONTEND_ORIGIN` is optional and defaults to
 `http://localhost:5173`. RetailTrace uses
 `Authorization: Bearer <RETAILTRACE_API_KEY>` for its business API. The key
-must remain server-side.
+must remain server-side. `PUBLIC_APP_URL` is optional; when set, replace the
+placeholder with an HTTPS public origin. Localhost, loopback, and private LAN
+addresses are rejected. Leave it unset for local-only development; receipts
+will not show QR links until a public origin is configured.
 
 ### Schema initialization and versioning
 
@@ -392,6 +406,7 @@ is not returned to callers. CORS is not an authentication mechanism.
 | `POST` | `/api/integration/retry/:syncId` | Refresh or safely retry a Supplier, Product, or Order mapping | None locally; backend uses RetailTrace bearer key | Implemented and tested |
 | `GET` | `/api/integration/records/:recordId/verify` | Ask RetailTrace to verify a record | None locally; backend uses RetailTrace bearer key | Implemented and tested |
 | `GET` | `/api/integration/transactions/:transactionId/verify` | Find a record by transaction ID and verify that record | None locally; backend uses RetailTrace bearer key | Implemented; composed from RetailTrace record-list and record-verification endpoints |
+| `GET` | `/api/public/verify/:recordId` | Public, rate-limited order verification for QR links | None | Returns only verification state, public order reference, publication state, and transaction ID |
 | `POST` | `/api/suppliers` | Validate, save, and synchronize a Supplier | None | Implemented and API-tested |
 | `GET` | `/api/suppliers` | List Suppliers with their sync state | None | Implemented and API-tested |
 | `GET` | `/api/suppliers/:id` | Get a Supplier and its sync state | None | Implemented and API-tested |
@@ -420,6 +435,14 @@ endpoints generally use `{ "success": true, "data": ... }`; integration
 initialization includes a `status` of `initialized`, `partial`, or `failed`
 inside `data`. Upstream errors are converted to a safe error response; no
 request or response includes the API key.
+
+The public verification endpoint returns `{ "success": true, "data": ... }`
+with `status` equal to `VERIFIED`, `NOT_VERIFIED`, `PENDING`, or `UNAVAILABLE`.
+When available, `data` also contains a public order reference, publication
+status, and blockchain transaction ID. It never includes the local order ID,
+customer details, or RetailTrace credentials. Requests are limited to 30 per
+minute per client IP. `VERIFIED` is returned only after RetailTrace's
+record-verification result confirms the blockchain commitment.
 
 ## RetailTrace API contract used
 
@@ -507,9 +530,9 @@ npm run dev
 ```
 
 Vite prints its local URL, normally `http://localhost:5173`. Open that URL for
-the Verdant Store storefront; open `/admin` for the integration dashboard. If
-the business backend uses another URL, set `VITE_API_BASE_URL` in the frontend
-environment before starting Vite.
+the Verdant Store storefront; open `/admin` for the integration dashboard.
+Same-origin `/api` requests are proxied to the local backend. Set
+`BACKEND_PROXY_TARGET` before starting Vite only if the backend address differs.
 Frontend checks are:
 
 ```bash
@@ -521,6 +544,42 @@ The storefront supports product browsing, checkout, order receipts, and record
 verification. Supplier APIs can also be exercised directly. The
 RetailTrace documentation UI is at
 `http://localhost:5000/api/docs`.
+
+### Scanning a QR code with a phone through ngrok
+
+The QR URL must use the same public HTTPS origin that serves the storefront.
+Do not set it to `localhost`, `127.0.0.1`, or a private LAN address.
+
+1. Start PostgreSQL, RetailTrace, and the Verdant backend as described above.
+2. Start the frontend with its local API proxy:
+
+   ```bash
+   cd frontend
+   BACKEND_PROXY_TARGET=http://localhost:5001 npm run dev -- --host 0.0.0.0
+   ```
+
+3. In another terminal, expose Vite and copy the HTTPS hostname printed by
+   ngrok:
+
+   ```bash
+   ngrok http 5173
+   ```
+
+4. Restart Vite with that hostname allowed. Use the hostname only (no scheme):
+
+   ```bash
+   VITE_ALLOWED_HOSTS=<your-ngrok-host> BACKEND_PROXY_TARGET=http://localhost:5001 npm run dev -- --host 0.0.0.0
+   ```
+
+5. Set `PUBLIC_APP_URL=https://<your-ngrok-host>` in the ignored
+   `backend/.env` and restart the backend. Do not commit the tunnel URL. Leave
+   `VITE_API_BASE_URL` unset so the phone uses same-origin `/api` requests
+   through the Vite proxy.
+6. Open the HTTPS ngrok URL on the phone, place an order that reaches confirmed
+   RetailTrace publication, and scan the QR shown on its receipt. The phone
+   must be able to reach the tunnel; the local backend must be running and able
+   to reach RetailTrace. For a changing free ngrok URL, update `PUBLIC_APP_URL`
+   and `VITE_ALLOWED_HOSTS` each time the URL changes.
 
 ### 4. Inspect the database
 
@@ -588,14 +647,14 @@ schema initialization, blockchain status, verification, and retry:
 
 ## Verification
 
-The backend `npm test` command runs the node:test suite through `tsx`. Current
-automated coverage includes RetailTrace request/response envelopes, pending
-and confirmed publication, timeout/error handling, Supplier and Product
-references, scalar Order references for multiple items, transaction ID
-persistence, uncertain-submission recovery, and retry without duplicate POSTs.
-The frontend does not currently have a separate automated test suite.
-The final backend suite passed 22 tests, backend typecheck/build and Prisma
-validation passed, and frontend production build and lint passed.
+The backend `npm test` command runs the node:test suite through `tsx`. Automated
+coverage includes RetailTrace request/response envelopes, pending and confirmed
+publication, public verification success/failure/pending/outage cases,
+non-Order and invalid IDs, public data minimization, rate limiting, QR-link
+eligibility, Supplier and Product references, scalar Order references,
+transaction ID persistence, and retry without duplicate POSTs. The frontend
+does not currently have a separate automated test suite; use its production
+build and lint checks.
 
 The current working RetailTrace service passed a live smoke test: its
 authenticated health check was connected; three uniquely named test schemas
@@ -605,13 +664,12 @@ accepted; and record and transaction verification succeeded. These smoke-test
 schemas and records were left in RetailTrace; no existing data was deleted.
 
 The live test exercised RetailTrace directly, not the complete Verdant
-PostgreSQL-backed application. Verdant's local backend (`localhost:5001`) and
-PostgreSQL (`localhost:5433`) were unavailable, so the new additive migration
-was not applied and a full Verdant-to-RetailTrace order workflow was not
-claimed as end-to-end verified. Apply the migration with
+PostgreSQL-backed application. The new public QR workflow has automated
+contract tests but has not yet been tested with a live Verdant database,
+RetailTrace service, and physical phone scan. Apply pending migrations with
 `cd backend && npx prisma migrate deploy` when the configured database is
-available. No QR generator or scanner is present in the current frontend
-source; the existing record and transaction verification UI remains in place.
+available, then follow the ngrok phone-testing steps above before claiming the
+full flow is end-to-end verified.
 
 ## Living documentation
 

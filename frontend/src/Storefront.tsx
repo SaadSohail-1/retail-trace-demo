@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, CircleAlert, LoaderCircle, ShoppingBag, ShieldCheck, Sprout, X } from "lucide-react";
+import { Check, CircleAlert, Copy, LoaderCircle, ShoppingBag, ShieldCheck, Sprout, X } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import {
   api,
   getErrorMessage,
@@ -98,6 +99,9 @@ export default function Storefront() {
       ]);
       setProducts(productResult);
       setOrders(orderResult);
+      setCompleted((current) => current
+        ? orderResult.find(({ order }) => order.id === current.order.id) ?? current
+        : current);
     } catch (refreshError) {
       notify("error", getErrorMessage(refreshError));
     }
@@ -243,6 +247,15 @@ export default function Storefront() {
       notify("error", getErrorMessage(verifyError));
     } finally {
       setTransactionVerifying(false);
+    }
+  }
+
+  async function copyTransactionId(transactionId: string) {
+    try {
+      await navigator.clipboard.writeText(transactionId);
+      notify("success", "Transaction ID copied.");
+    } catch {
+      notify("error", "Could not copy the transaction ID. Select and copy it manually.");
     }
   }
 
@@ -438,6 +451,34 @@ export default function Storefront() {
               <>
                 <label>Order ID<code>{completed.order.id}</code></label>
                 <label>Transaction ID<code>{transactionDisplay(completed.synchronization)}</code></label>
+                {completed.synchronization?.transactionId && (
+                  <button
+                    type="button"
+                    className="copy-transaction"
+                    onClick={() => {
+                      const transactionId = completed.synchronization?.transactionId;
+                      if (transactionId) void copyTransactionId(transactionId);
+                    }}
+                    aria-label="Copy blockchain transaction ID"
+                  >
+                    <Copy size={14} /> Copy transaction ID
+                  </button>
+                )}
+                {completed.synchronization?.syncStatus === "SYNCED" &&
+                  completed.synchronization.retailTraceStatus === "CONFIRMED" &&
+                  completed.synchronization.retailTraceRecordId &&
+                  completed.synchronization.transactionId &&
+                  (completed.verificationUrl ? (
+                    <div className="order-verification-qr">
+                      <QRCodeSVG value={completed.verificationUrl} size={156} level="M" includeMargin />
+                      <strong>Scan to verify this order on the blockchain.</strong>
+                      <a href={completed.verificationUrl}>Open public verification page</a>
+                    </div>
+                  ) : (
+                    <p className="order-verification-link-missing">
+                      A public verification link is not configured for this store.
+                    </p>
+                  ))}
                 {completedVerification?.status === "complete" && (
                   <>
                     <label>Blockchain verification<code>{completedVerification.result.verified ? "Verified — record hash matches" : "Not verified — hash match could not be confirmed"}</code></label>

@@ -151,10 +151,11 @@ function createInMemoryRepository() {
 async function withOrderApi(
   service: ReturnType<typeof createOrderService>,
   run: (baseUrl: string) => Promise<void>,
+  publicAppUrl: string | null = null,
 ): Promise<void> {
   const app = express();
   app.use(express.json());
-  app.use("/api/orders", createOrderRouter(service));
+  app.use("/api/orders", createOrderRouter(service, publicAppUrl));
   app.use(errorHandler);
 
   const server = createServer(app);
@@ -199,6 +200,8 @@ describe("Order API", () => {
         view.items[0]?.product.id,
       );
       view.synchronization.retailTraceRecordId = "507f1f77bcf86cd799439099";
+      view.synchronization.transactionId = "confirmed-blockchain-transaction";
+      view.synchronization.retailTraceStatus = "CONFIRMED";
       view.synchronization.syncStatus = "SYNCED";
       return view.synchronization;
     });
@@ -210,7 +213,7 @@ describe("Order API", () => {
         body: JSON.stringify(orderInput),
       });
       const body = await readJson(response);
-      const data = body.data as OrderView;
+      const data = body.data as OrderView & { verificationUrl: string | null };
 
       assert.equal(response.status, 201);
       assert.equal(body.success, true);
@@ -219,9 +222,36 @@ describe("Order API", () => {
       assert.equal(data.items.length, 2);
       assert.equal(data.synchronization?.syncStatus, "SYNCED");
       assert.equal(data.synchronization?.retailTraceRecordId, "507f1f77bcf86cd799439099");
+      assert.equal(
+        data.verificationUrl,
+        "https://verdant.example/verify/507f1f77bcf86cd799439099",
+      );
       assert.equal(productSynchronizations.length, 2);
       assert.equal(orders.length, 1);
+    }, "https://verdant.example");
+  });
+
+  it("does not return a QR verification URL for an unpublished Order", async () => {
+    const { repository } = createInMemoryRepository();
+    const service = createOrderService(repository, async (orderId) => {
+      const view = await repository.get(orderId);
+      assert.ok(view?.synchronization);
+      view.synchronization.retailTraceRecordId = "507f1f77bcf86cd799439099";
+      view.synchronization.retailTraceStatus = "PENDING";
+      view.synchronization.syncStatus = "SYNCED";
+      return view.synchronization;
     });
+
+    await withOrderApi(service, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/orders`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(orderInput),
+      });
+      const body = await readJson(response);
+      const data = body.data as OrderView & { verificationUrl: string | null };
+      assert.equal(data.verificationUrl, null);
+    }, "https://verdant.example");
   });
 
   it("rejects invalid items and references to nonexistent local Products", async () => {

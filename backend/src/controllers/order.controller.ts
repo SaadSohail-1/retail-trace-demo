@@ -1,9 +1,11 @@
 import type { Request, Response } from "express";
+import { env } from "../config/env.js";
 import { IntegrationError } from "../services/integration-errors.js";
 import {
   orderService,
   type CreateOrderInput,
   type CreateOrderItemInput,
+  type OrderView,
   type OrderService,
 } from "../services/order.service.js";
 
@@ -71,15 +73,41 @@ function parseOrderInput(value: unknown): CreateOrderInput {
   };
 }
 
-export function createOrderController(service: OrderService = orderService) {
+function addVerificationUrl<T extends { synchronization: OrderView["synchronization"] }>(
+  order: T,
+  publicAppUrl: string | null,
+): T & { verificationUrl: string | null } {
+  const sync = order.synchronization;
+  const published =
+    sync?.syncStatus === "SYNCED" &&
+    sync.retailTraceStatus === "CONFIRMED" &&
+    Boolean(sync.retailTraceRecordId) &&
+    Boolean(sync.transactionId);
+  return {
+    ...order,
+    verificationUrl:
+      publicAppUrl && published && sync?.retailTraceRecordId
+        ? new URL(`/verify/${encodeURIComponent(sync.retailTraceRecordId)}`, publicAppUrl).toString()
+        : null,
+  };
+}
+
+export function createOrderController(
+  service: OrderService = orderService,
+  publicAppUrl: string | null = env.publicAppUrl,
+) {
   return {
     async create(request: Request, response: Response): Promise<void> {
       const data = await service.create(parseOrderInput(request.body));
-      response.status(201).json({ success: true, data });
+      response.status(201).json({ success: true, data: addVerificationUrl(data, publicAppUrl) });
     },
 
     async list(_request: Request, response: Response): Promise<void> {
-      response.json({ success: true, data: await service.list() });
+      const orders = await service.list();
+      response.json({
+        success: true,
+        data: orders.map((order) => addVerificationUrl(order, publicAppUrl)),
+      });
     },
 
     async get(request: Request, response: Response): Promise<void> {
@@ -91,7 +119,7 @@ export function createOrderController(service: OrderService = orderService) {
       if (!data) {
         throw new IntegrationError(404, "ORDER_NOT_FOUND", "Order was not found");
       }
-      response.json({ success: true, data });
+      response.json({ success: true, data: addVerificationUrl(data, publicAppUrl) });
     },
   };
 }
