@@ -42,6 +42,27 @@ Zealand. The business needs normal e-commerce data—suppliers, stock, orders, a
 order items—in its own database. It also wants to publish selected supplier and
 product facts to RetailTrace so they can be independently verified.
 
+## RetailTrace schema management and database compatibility
+
+The integration dashboard's **RetailTrace schemas** section lists schemas owned
+by the configured Verdant RetailTrace business account. Selecting a schema shows
+its fields, required/optional status, reference targets, and multiple-reference
+settings. The upload control sends a RetailTrace-format `{ name, fields }`
+JSON file to `POST /api/integration/schemas`; the Verdant backend forwards it
+without accepting or storing a business ID from the browser. RetailTrace remains
+the authoritative validator and enforces business ownership.
+
+Compatibility checks are read-only. Verdant derives structural metadata from
+the checked-in Prisma model for `Supplier`, `Product`, and `Order`; it does not
+read customer rows or return database credentials. `GET
+/api/integration/schemas/:schemaId/compare/:entity` compares the entity metadata
+with the selected RetailTrace schema and returns matched fields, type/reference
+mismatches, missing or extra fields, warnings, and a field-based score.
+
+The score is `compatible mapped fields / database fields included in the
+comparison * 100`, rounded to the nearest integer. It is not proof that values,
+relationships, or actual records are correct.
+
 ## Architecture
 
 ```mermaid

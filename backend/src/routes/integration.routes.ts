@@ -4,6 +4,9 @@ import {
   getRecords,
   getSchemas,
   getStatus,
+  getSchema,
+  uploadSchema,
+  compareSchema,
   initialize,
   retrySync,
   syncAll,
@@ -18,6 +21,9 @@ integrationRouter.get("/health", getHealth);
 integrationRouter.post("/initialize", initialize);
 integrationRouter.post("/sync-all", syncAll);
 integrationRouter.get("/schemas", getSchemas);
+integrationRouter.post("/schemas", uploadSchema);
+integrationRouter.get("/schemas/:schemaId", getSchema);
+integrationRouter.get("/schemas/:schemaId/compare/:entity", compareSchema);
 integrationRouter.get("/records", getRecords);
 integrationRouter.post("/retry/:syncId", retrySync);
 integrationRouter.get("/transactions/:transactionId/verify", verifyTransaction);

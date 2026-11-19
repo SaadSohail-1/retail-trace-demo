@@ -38,6 +38,41 @@ export interface SchemaSummary {
   version: number;
 }
 
+export interface SchemaField {
+  name: string;
+  type: "string" | "number" | "integer" | "boolean" | "date" | "reference";
+  required: boolean;
+  targetSchemaId?: string;
+  multiple?: boolean;
+}
+
+export interface SchemaDetail extends SchemaSummary {
+  fields: SchemaField[];
+  schema: Record<string, unknown>;
+}
+
+export interface CompatibilityRow {
+  databaseField: string;
+  databaseType: string;
+  retailTraceField: string | null;
+  retailTraceType: string | null;
+  required: boolean;
+  retailTraceRequired: boolean | null;
+  status: string;
+  detail: string;
+}
+
+export interface CompatibilityReport {
+  entity: string;
+  schemaId: string;
+  schemaName: string;
+  score: number;
+  compatibleFieldCount: number;
+  mappedFieldCount: number;
+  rows: CompatibilityRow[];
+  warnings: string[];
+}
+
 export interface RetailTraceRecord {
   recordId: string;
   businessId: string;
@@ -336,6 +371,28 @@ export const api = {
 
   async getSchemas(): Promise<SchemaSummary[]> {
     const response = await client.get<ApiResponse<SchemaSummary[]>>("/api/integration/schemas");
+    return response.data.data;
+  },
+
+  async getSchema(schemaId: string): Promise<SchemaDetail> {
+    const response = await client.get<ApiResponse<SchemaDetail>>(
+      `/api/integration/schemas/${encodeURIComponent(schemaId)}`,
+    );
+    return response.data.data;
+  },
+
+  async uploadSchema(definition: { name: string; fields: SchemaField[] }): Promise<SchemaSummary> {
+    const response = await client.post<ApiResponse<SchemaSummary>>(
+      "/api/integration/schemas",
+      definition,
+    );
+    return response.data.data;
+  },
+
+  async compareSchema(schemaId: string, entity: "Supplier" | "Product" | "Order"): Promise<CompatibilityReport> {
+    const response = await client.get<ApiResponse<CompatibilityReport>>(
+      `/api/integration/schemas/${encodeURIComponent(schemaId)}/compare/${encodeURIComponent(entity)}`,
+    );
     return response.data.data;
   },
 

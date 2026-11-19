@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  buildCompatibilityReport,
   findCompatibleSchema,
   schemaFieldsMatch,
   type RetailTraceSchemaReader,
@@ -48,6 +49,20 @@ function createReader(schemas: RetailTraceSchema[]): RetailTraceSchemaReader {
 }
 
 describe("RetailTrace schema compatibility", () => {
+  it("builds a read-only database compatibility report with scores and warnings", () => {
+    const schema = createSchema("supplier-1", "Supplier", [
+      { name: "name", type: "string", required: true },
+      { name: "email", type: "string", required: true },
+      { name: "country", type: "string", required: true },
+      { name: "active", type: "boolean", required: true },
+    ]);
+    const report = buildCompatibilityReport("Supplier", schema);
+
+    assert.equal(report.score, 80);
+    assert.equal(report.compatibleFieldCount, 4);
+    assert.equal(report.mappedFieldCount, 5);
+    assert.ok(report.rows.some((row) => row.status === "Missing in RetailTrace"));
+  });
   it("rejects multiple references where Verdant sends a scalar reference", () => {
     const fields = [
       ...scalarOrderFields.slice(0, 3),

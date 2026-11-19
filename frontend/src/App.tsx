@@ -28,6 +28,8 @@ import {
   type ProductView,
   type OrderView,
   type VerificationResult,
+  type SchemaDetail,
+  type CompatibilityReport,
 } from './services/api'
 import './App.css'
 
@@ -106,6 +108,10 @@ export function AdminDashboard() {
   const [verificationById, setVerificationById] = useState<
     Record<string, VerificationState>
   >({})
+  const [schemaDetail, setSchemaDetail] = useState<SchemaDetail | null>(null)
+  const [compatibility, setCompatibility] = useState<CompatibilityReport | null>(null)
+  const [schemaUploadError, setSchemaUploadError] = useState('')
+  const [schemaUploadSuccess, setSchemaUploadSuccess] = useState('')
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -272,6 +278,57 @@ export function AdminDashboard() {
       }))
     } finally {
       setVerifyingId(null)
+    }
+  }
+
+  async function handleSchemaDetail(schemaId: string) {
+    setSchemaDetail(null)
+    setCompatibility(null)
+    try {
+      setSchemaDetail(await api.getSchema(schemaId))
+    } catch (error) {
+      setNotice({ kind: 'error', message: getErrorMessage(error) })
+    }
+  }
+
+  async function handleCompatibility(schemaId: string, entity: 'Supplier' | 'Product' | 'Order') {
+    try {
+      setCompatibility(await api.compareSchema(schemaId, entity))
+    } catch (error) {
+      setNotice({ kind: 'error', message: getErrorMessage(error) })
+    }
+  }
+
+  async function handleSchemaUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0]
+    if (!file) return
+    setSchemaUploadError('')
+    setSchemaUploadSuccess('')
+    try {
+      const parsed: unknown = JSON.parse(await file.text())
+      if (
+        !parsed ||
+        typeof parsed !== 'object' ||
+        Array.isArray(parsed) ||
+        !('name' in parsed) ||
+        typeof parsed.name !== 'string' ||
+        !('fields' in parsed) ||
+        !Array.isArray(parsed.fields)
+      ) {
+        throw new Error('Expected RetailTrace format: { "name": "...", "fields": [...] }')
+      }
+      const fields = parsed.fields as SchemaDetail['fields']
+      const created = await api.uploadSchema({ name: parsed.name, fields })
+      setSchemaUploadSuccess(`Schema "${created.name}" registered as version ${created.version}.`)
+      await refresh()
+    } catch (error) {
+      setSchemaUploadError(
+        error instanceof SyntaxError
+          ? `Invalid JSON: ${error.message}`
+          : getErrorMessage(error),
+      )
+    } finally {
+      event.currentTarget.value = ''
     }
   }
 
@@ -500,6 +557,17 @@ export function AdminDashboard() {
               <p className="panel-description">
                 Versioned RetailTrace schemas define the fields accepted for each business record.
               </p>
+              <label className="schema-upload">
+                <ArrowDownToLine size={16} />
+                <span>Upload RetailTrace .json</span>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={(event) => void handleSchemaUpload(event)}
+                />
+              </label>
+              {schemaUploadError && <div className="notice notice-error" role="alert">{schemaUploadError}</div>}
+              {schemaUploadSuccess && <div className="notice notice-success" role="status">{schemaUploadSuccess}</div>}
               <div className="schema-list">
                 {schemas.length === 0 ? (
                   <div className="empty-state">
@@ -509,14 +577,19 @@ export function AdminDashboard() {
                   </div>
                 ) : (
                   schemas.map((schema) => (
-                    <div className="schema-row" key={schema.schemaId}>
+                    <button
+                      type="button"
+                      className="schema-row"
+                      key={schema.schemaId}
+                      onClick={() => void handleSchemaDetail(schema.schemaId)}
+                    >
                       <span className="schema-symbol"><FileStack size={17} /></span>
                       <div className="schema-details">
                         <strong>{schema.name}</strong>
                         <code title={schema.schemaId}>{shortId(schema.schemaId)}</code>
                       </div>
                       <span className="version-pill">v{schema.version}</span>
-                    </div>
+                    </button>
                   ))
                 )}
               </div>
@@ -525,6 +598,58 @@ export function AdminDashboard() {
                 Schema IDs are stored in the local IntegrationConfig row.
               </div>
             </section>
+
+            {schemaDetail && (
+              <section className="panel retry-panel">
+                <div className="panel-header">
+                  <div>
+                    <div className="eyebrow muted-eyebrow">SCHEMA DETAIL</div>
+                    <h2>{schemaDetail.name} · v{schemaDetail.version}</h2>
+                  </div>
+                  <button className="text-button" onClick={() => setSchemaDetail(null)}>Close</button>
+                </div>
+                <code className="schema-detail-id">{schemaDetail.schemaId}</code>
+                <div className="schema-field-list">
+                  {schemaDetail.fields.map((field) => (
+                    <div className="schema-field-row" key={field.name}>
+                      <strong>{field.name}</strong>
+                      <span>{field.type}{field.multiple ? '[]' : ''}</span>
+                      <span>{field.required ? 'Required' : 'Optional'}</span>
+                      {field.type === 'reference' && (
+                        <code title={field.targetSchemaId}>Target: {field.targetSchemaId ? shortId(field.targetSchemaId) : 'missing'}</code>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="compatibility-actions">
+                  {(['Supplier', 'Product', 'Order'] as const).map((entity) => (
+                    <button
+                      key={entity}
+                      className="button button-secondary"
+                      onClick={() => void handleCompatibility(schemaDetail.schemaId, entity)}
+                    >
+                      Compare {entity}
+                    </button>
+                  ))}
+                </div>
+                {compatibility && compatibility.schemaId === schemaDetail.schemaId && (
+                  <div className="compatibility-report">
+                    <strong>{compatibility.entity} compatibility: {compatibility.score}%</strong>
+                    <small>{compatibility.compatibleFieldCount} of {compatibility.mappedFieldCount} mapped fields matched.</small>
+                    {compatibility.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+                    <div className="compatibility-table">
+                      {compatibility.rows.map((row, index) => (
+                        <div className="compatibility-row" key={`${row.databaseField}-${row.retailTraceField}-${index}`}>
+                          <span>{row.databaseField || '—'} · {row.databaseType || '—'}</span>
+                          <span>{row.retailTraceField || '—'} · {row.retailTraceType || '—'}</span>
+                          <strong>{row.status}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
 
             <section className="panel retry-panel">
               <div className="panel-header">
