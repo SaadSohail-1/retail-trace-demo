@@ -43,6 +43,29 @@ export interface RetailTraceVerification {
   transactionId: string | null;
 }
 
+export interface RetailTracePublicTransactionVerification {
+  status:
+    | "VERIFIED"
+    | "TRANSACTION_NOT_FOUND"
+    | "RECORD_NOT_FOUND"
+    | "INTEGRITY_MISMATCH"
+    | "UNCONFIRMED"
+    | "UNAVAILABLE";
+  transactionExists: boolean | null;
+  recordFound: boolean | null;
+  commitmentMatches: boolean | null;
+  transactionId: string;
+  publicationStatus: "CONFIRMED" | "PENDING" | "FAILED" | "UNKNOWN";
+  network: string;
+  recordId?: string;
+  streamName?: string;
+  commitmentHash?: string;
+  confirmations?: number;
+  blockHeight?: number;
+  publicationTimestamp?: string;
+  explanation: string;
+}
+
 export interface RetailTraceBlockchainHealth {
   status: "connected" | "unavailable" | "unknown";
   checkedAt: string;
@@ -53,6 +76,15 @@ const client = axios.create({
   timeout: 10_000,
   headers: {
     Authorization: `Bearer ${env.retailTraceApiKey}`,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  },
+});
+
+const publicClient = axios.create({
+  baseURL: env.retailTraceBaseUrl,
+  timeout: 10_000,
+  headers: {
     Accept: "application/json",
     "Content-Type": "application/json",
   },
@@ -202,7 +234,38 @@ function isHealth(value: unknown): value is RetailTraceBlockchainHealth {
   );
 }
 
+function isPublicTransactionVerification(
+  value: unknown,
+): value is RetailTracePublicTransactionVerification {
+  return (
+    isObject(value) &&
+    (value.status === "VERIFIED" ||
+      value.status === "TRANSACTION_NOT_FOUND" ||
+      value.status === "RECORD_NOT_FOUND" ||
+      value.status === "INTEGRITY_MISMATCH" ||
+      value.status === "UNCONFIRMED" ||
+      value.status === "UNAVAILABLE") &&
+    (value.transactionExists === null || typeof value.transactionExists === "boolean") &&
+    (value.recordFound === null || typeof value.recordFound === "boolean") &&
+    (value.commitmentMatches === null || typeof value.commitmentMatches === "boolean") &&
+    typeof value.transactionId === "string" &&
+    (value.publicationStatus === "CONFIRMED" ||
+      value.publicationStatus === "PENDING" ||
+      value.publicationStatus === "FAILED" ||
+      value.publicationStatus === "UNKNOWN") &&
+    typeof value.network === "string" &&
+    (!("recordId" in value) || typeof value.recordId === "string") &&
+    (!("streamName" in value) || typeof value.streamName === "string") &&
+    (!("commitmentHash" in value) || typeof value.commitmentHash === "string") &&
+    (!("confirmations" in value) || typeof value.confirmations === "number") &&
+    (!("blockHeight" in value) || typeof value.blockHeight === "number") &&
+    (!("publicationTimestamp" in value) || typeof value.publicationTimestamp === "string") &&
+    typeof value.explanation === "string"
+  );
+}
+
 export function createRetailTraceApi(http: AxiosInstance = client) {
+  const publicHttp = http === client ? publicClient : http;
   return {
     async checkHealth(): Promise<RetailTraceBlockchainHealth> {
       return requestData(http.get("/health/blockchain"), isHealth);
@@ -260,6 +323,15 @@ export function createRetailTraceApi(http: AxiosInstance = client) {
       return requestData(
         http.get(`/records/${encodeURIComponent(recordId)}/verify`),
         isVerification,
+      );
+    },
+
+    async verifyPublicTransaction(
+      transactionId: string,
+    ): Promise<RetailTracePublicTransactionVerification> {
+      return requestData(
+        publicHttp.get(`/public/verify/${encodeURIComponent(transactionId)}`),
+        isPublicTransactionVerification,
       );
     },
 

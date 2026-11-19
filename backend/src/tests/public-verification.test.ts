@@ -8,22 +8,27 @@ import { createPublicVerificationRateLimit } from "../middleware/public-verifica
 import { createPublicRouter } from "../routes/public.routes.js";
 import { RetailTraceApiError } from "../services/integration-errors.js";
 import {
+  createPublicOrderLookupService,
+  createPublicRecordLookupService,
   createPublicVerificationService,
   type PublicVerificationRepository,
 } from "../services/public-verification.service.js";
+import type {
+  RetailTracePublicTransactionVerification,
+  RetailTraceRecord,
+} from "../services/retailtrace-api.service.js";
 
 const recordId = "507f1f77bcf86cd799439011";
+const transactionId = "real-blockchain-transaction";
+const now = new Date("2026-03-04T10:00:00.000Z");
 
-function createSync(
-  overrides: Partial<RetailTraceSync> = {},
-): RetailTraceSync {
-  const now = new Date();
+function createSync(overrides: Partial<RetailTraceSync> = {}): RetailTraceSync {
   return {
     id: "internal-sync-secret",
     entityType: "Order",
     localEntityId: "internal-order-secret",
     retailTraceRecordId: recordId,
-    transactionId: "real-blockchain-transaction",
+    transactionId,
     retailTraceStatus: "CONFIRMED",
     submissionUncertain: false,
     submissionStartedAt: null,
@@ -35,33 +40,73 @@ function createSync(
   };
 }
 
-function createRepository(sync: RetailTraceSync | null): PublicVerificationRepository {
+function createRepository(
+  sync: RetailTraceSync | null,
+  orderExists = true,
+): PublicVerificationRepository {
   return {
     async findOrderSyncByRecordId() {
       return sync;
     },
+    async findOrderById() {
+      return orderExists
+        ? {
+            createdAt: now,
+            total: { toFixed: () => "42.50" },
+            items: [
+              { quantity: 2, product: { name: "Cedar Oil" } },
+              { quantity: 1, product: { name: "Oat Mask" } },
+            ],
+          }
+        : null;
+    },
+  };
+}
+
+function createRetailTraceRecord(
+  overrides: Partial<RetailTraceRecord> = {},
+): RetailTraceRecord {
+  return {
+    recordId,
+    businessId: "private-business-id",
+    schemaId: "private-schema-id",
+    data: { customerEmail: "private@example.invalid" },
+    transactionId,
+    status: "CONFIRMED",
+    createdAt: now.toISOString(),
+    ...overrides,
+  };
+}
+
+function createVerifiedTransaction(
+  overrides: Partial<RetailTracePublicTransactionVerification> = {},
+): RetailTracePublicTransactionVerification {
+  return {
+    status: "VERIFIED",
+    transactionExists: true,
+    recordFound: true,
+    commitmentMatches: true,
+    transactionId,
+    publicationStatus: "CONFIRMED",
+    network: "test-chain",
+    recordId,
+    streamName: "records",
+    commitmentHash: `sha256:${"a".repeat(64)}`,
+    confirmations: 3,
+    blockHeight: 9876,
+    publicationTimestamp: now.toISOString(),
+    explanation: "verified",
+    ...overrides,
   };
 }
 
 async function withPublicApi(
-  verify: (id: string) => Promise<{
-    status: "VERIFIED" | "NOT_VERIFIED" | "PENDING" | "UNAVAILABLE";
-    orderReference?: string;
-    publicationStatus?: "PENDING" | "CONFIRMED" | "FAILED" | null;
-    transactionId?: string | null;
-  }>,
+  router: express.Router,
   run: (baseUrl: string) => Promise<void>,
 ): Promise<void> {
   const app = express();
-  app.use(
-    "/api/public",
-    createPublicRouter(
-      verify,
-      createPublicVerificationRateLimit({ maxRequests: 2, windowMs: 60_000 }),
-    ),
-  );
+  app.use("/api/public", router);
   app.use(errorHandler);
-
   const server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -78,131 +123,174 @@ async function withPublicApi(
 }
 
 describe("Public order verification", () => {
-  it("verifies the RetailTrace record and returns only minimal public data", async () => {
-    const verify = createPublicVerificationService(
+  it("returns an explicit safe order summary without customer or database identifiers", async () => {
+    const lookupOrder = createPublicOrderLookupService(createRepository(createSync()));
+    const data = await lookupOrder(recordId);
+    assert.deepEqual(data, {
+      status: "FOUND",
+      orderReference: "ORD-0406FA3B4F",
+      retailTraceRecordId: recordId,
+      orderDate: now.toISOString(),
+      products: [
+        { name: "Cedar Oil", quantity: 2 },
+        { name: "Oat Mask", quantity: 1 },
+      ],
+      total: "42.50",
+      transactionId,
+      publicationStatus: "CONFIRMED",
+    });
+    const serialized = JSON.stringify(data);
+    assert.equal(serialized.includes("internal-order-secret"), false);
+    assert.equal(serialized.includes("internal-sync-secret"), false);
+    assert.equal(serialized.includes("private@example.invalid"), false);
+  });
+
+  it("only exposes a minimal RetailTrace record summary", async () => {
+    const lookupRecord = createPublicRecordLookupService(
       createRepository(createSync()),
       {
-        async verifyRecord(id) {
-          return {
-            recordId: id,
-            verified: true,
-            transactionId: "real-blockchain-transaction",
-          };
+        async getRecord() {
+          return createRetailTraceRecord();
         },
       },
     );
-
-    await withPublicApi(verify, async (baseUrl) => {
-      const response = await fetch(`${baseUrl}/api/public/verify/${recordId}`);
-      const body = await response.json() as {
-        success: boolean;
-        data: Record<string, unknown>;
-      };
-      assert.equal(response.status, 200);
-      assert.equal(body.success, true);
-      assert.deepEqual(body.data, {
-        status: "VERIFIED",
-        orderReference: "ORD-99439011",
-        publicationStatus: "CONFIRMED",
-        transactionId: "real-blockchain-transaction",
-      });
-      assert.equal(response.headers.get("access-control-allow-origin"), null);
-      const serialized = JSON.stringify(body);
-      assert.equal(serialized.includes("internal-sync-secret"), false);
-      assert.equal(serialized.includes("internal-order-secret"), false);
-      assert.equal(serialized.includes("private@example.invalid"), false);
+    assert.deepEqual(await lookupRecord(recordId), {
+      status: "FOUND",
+      recordId,
+      transactionId,
+      publicationStatus: "CONFIRMED",
+      publicationTimestamp: now.toISOString(),
     });
   });
 
-  it("returns NOT_VERIFIED for missing, invalid, and non-order records", async () => {
-    let lookups = 0;
-    const missing = createPublicVerificationService(
+  it("uses the actual transaction verification result even when saved status is stale", async () => {
+    const repository = createRepository(createSync({
+      retailTraceStatus: null,
+      syncStatus: "FAILED",
+    }));
+    const verify = createPublicVerificationService(
+      repository,
       {
-        async findOrderSyncByRecordId() {
-          lookups += 1;
-          return null;
+        async getRecord() {
+          return createRetailTraceRecord({ status: "PENDING" });
+        },
+        async verifyPublicTransaction() {
+          return createVerifiedTransaction();
         },
       },
-      { async verifyRecord() { throw new Error("Must not verify a missing record"); } },
+      () => now,
+      () => "https://trace.example.com",
     );
-    assert.deepEqual(await missing(recordId), { status: "NOT_VERIFIED" });
-    assert.deepEqual(await missing("invalid-id"), { status: "NOT_VERIFIED" });
-    assert.equal(lookups, 1);
 
-    const supplierSync = createSync({ entityType: "Supplier" });
-    const nonOrder = createPublicVerificationService(
-      createRepository(supplierSync),
-      { async verifyRecord() { throw new Error("Must not verify a non-order record"); } },
+    const result = await verify(recordId);
+    assert.equal(result.status, "VERIFIED");
+    assert.equal(result.transactionId, transactionId);
+    assert.equal(result.blockHeight, 9876);
+    assert.deepEqual(result.checks, {
+      transactionExists: true,
+      recordFound: true,
+      commitmentMatches: true,
+    });
+    assert.equal(
+      result.independentVerificationUrl,
+      `https://trace.example.com/verify?txid=${transactionId}`,
     );
-    assert.deepEqual(await nonOrder(recordId), { status: "NOT_VERIFIED" });
   });
 
-  it("returns PENDING until publication has completed", async () => {
-    const pending = createPublicVerificationService(
+  it("returns NOT_VERIFIED for missing, invalid, and non-order records", async () => {
+    let remoteCalls = 0;
+    const missing = createPublicVerificationService(
+      createRepository(null),
+      {
+        async getRecord() {
+          remoteCalls += 1;
+          throw new Error("Must not fetch a missing record");
+        },
+        async verifyPublicTransaction() {
+          remoteCalls += 1;
+          throw new Error("Must not verify a missing record");
+        },
+      },
+    );
+    assert.equal((await missing(recordId)).status, "NOT_VERIFIED");
+    assert.equal((await missing("invalid-id")).status, "NOT_VERIFIED");
+    assert.equal(remoteCalls, 0);
+
+    const supplierSync = createSync({ entityType: "Supplier" });
+    const nonOrder = createPublicOrderLookupService(createRepository(supplierSync));
+    assert.deepEqual(await nonOrder(recordId), { status: "NOT_FOUND" });
+  });
+
+  it("returns PENDING until an actual transaction ID is available", async () => {
+    const verify = createPublicVerificationService(
       createRepository(createSync({
         retailTraceStatus: "PENDING",
         syncStatus: "PENDING",
         transactionId: null,
       })),
-      { async verifyRecord() { throw new Error("Must not verify a pending record"); } },
+      {
+        async getRecord() {
+          return createRetailTraceRecord({
+            status: "PENDING",
+            transactionId: null,
+          });
+        },
+        async verifyPublicTransaction() {
+          throw new Error("Must not verify without a transaction ID");
+        },
+      },
+      () => now,
+    );
+    assert.equal((await verify(recordId)).status, "PENDING");
+  });
+
+  it("does not mark a transaction as verified when the commitment check fails", async () => {
+    const verify = createPublicVerificationService(
+      createRepository(createSync()),
+      {
+        async getRecord() {
+          return createRetailTraceRecord();
+        },
+        async verifyPublicTransaction() {
+          return createVerifiedTransaction({
+            status: "INTEGRITY_MISMATCH",
+            commitmentMatches: false,
+            explanation: "mismatch",
+          });
+        },
+      },
+      () => now,
+    );
+    const result = await verify(recordId);
+    assert.equal(result.status, "NOT_VERIFIED");
+    assert.equal(result.checks.commitmentMatches, false);
+  });
+
+  it("distinguishes publication pending and RetailTrace unavailability", async () => {
+    const pending = createPublicVerificationService(
+      createRepository(createSync()),
+      {
+        async getRecord() {
+          return createRetailTraceRecord();
+        },
+        async verifyPublicTransaction() {
+          return createVerifiedTransaction({
+            status: "UNCONFIRMED",
+            publicationStatus: "PENDING",
+          });
+        },
+      },
+      () => now,
     );
     assert.equal((await pending(recordId)).status, "PENDING");
-  });
 
-  it("returns NOT_VERIFIED when RetailTrace reports a failed commitment check", async () => {
-    const failed = createPublicVerificationService(
-      createRepository(createSync()),
-      {
-        async verifyRecord(id) {
-          return { recordId: id, verified: false, transactionId: null };
-        },
-      },
-    );
-    assert.equal((await failed(recordId)).status, "NOT_VERIFIED");
-  });
-
-  it("uses the live verification result when stored publication status is outdated", async () => {
-    const verify = createPublicVerificationService(
-      createRepository(createSync({
-        retailTraceStatus: null,
-        syncStatus: "FAILED",
-      })),
-      {
-        async verifyRecord(id) {
-          return {
-            recordId: id,
-            verified: true,
-            transactionId: "real-blockchain-transaction",
-          };
-        },
-      },
-    );
-
-    assert.equal((await verify(recordId)).status, "VERIFIED");
-  });
-
-  it("rejects a verification result for a different RetailTrace record", async () => {
-    const verify = createPublicVerificationService(
-      createRepository(createSync()),
-      {
-        async verifyRecord() {
-          return {
-            recordId: "507f1f77bcf86cd799439012",
-            verified: true,
-            transactionId: "real-blockchain-transaction",
-          };
-        },
-      },
-    );
-
-    assert.equal((await verify(recordId)).status, "NOT_VERIFIED");
-  });
-
-  it("returns UNAVAILABLE for a RetailTrace or blockchain outage", async () => {
     const unavailable = createPublicVerificationService(
       createRepository(createSync()),
       {
-        async verifyRecord() {
+        async getRecord() {
+          return createRetailTraceRecord();
+        },
+        async verifyPublicTransaction() {
           throw new RetailTraceApiError(
             502,
             "RETAILTRACE_UNAVAILABLE",
@@ -211,26 +299,47 @@ describe("Public order verification", () => {
           );
         },
       },
+      () => now,
     );
     assert.equal((await unavailable(recordId)).status, "UNAVAILABLE");
+    assert.deepEqual((await unavailable(recordId)).checks, {
+      transactionExists: null,
+      recordFound: null,
+      commitmentMatches: null,
+    });
   });
 
-  it("rate limits the public endpoint without requiring authentication", async () => {
+  it("serves public order lookup without authentication and applies rate limits", async () => {
     let calls = 0;
-    const verify = async () => {
-      calls += 1;
-      return { status: "VERIFIED" as const };
-    };
+    const lookupOrder = createPublicOrderLookupService({
+      ...createRepository(createSync()),
+      async findOrderSyncByRecordId() {
+        calls += 1;
+        return createSync();
+      },
+    });
+    const router = createPublicRouter(
+      async () => {
+        throw new Error("Not used in this test");
+      },
+      createPublicVerificationRateLimit({ maxRequests: 2, windowMs: 60_000 }),
+      lookupOrder,
+      async () => ({ status: "NOT_FOUND" }),
+    );
 
-    await withPublicApi(verify, async (baseUrl) => {
-      const first = await fetch(`${baseUrl}/api/public/verify/${recordId}`);
-      const second = await fetch(`${baseUrl}/api/public/verify/${recordId}`);
-      const limited = await fetch(`${baseUrl}/api/public/verify/${recordId}`);
+    await withPublicApi(router, async (baseUrl) => {
+      const first = await fetch(`${baseUrl}/api/public/order/${recordId}`);
+      const second = await fetch(`${baseUrl}/api/public/order/${recordId}`);
+      const limited = await fetch(`${baseUrl}/api/public/order/${recordId}`);
       assert.equal(first.status, 200);
       assert.equal(second.status, 200);
       assert.equal(limited.status, 429);
       assert.equal(limited.headers.has("retry-after"), true);
       assert.equal(calls, 2);
+      const body = await first.json() as { data: Record<string, unknown> };
+      assert.equal(body.data.status, "FOUND");
+      assert.equal("customerName" in body.data, false);
+      assert.equal("localEntityId" in body.data, false);
     });
   });
 });

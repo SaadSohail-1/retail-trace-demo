@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { getPublicAppUrl } from "../config/env.js";
+import {
+  getPublicAppUrl,
+  getPublicRetailTraceUrl,
+} from "../config/env.js";
 
 describe("Public application URL", () => {
   it("accepts and normalizes a public HTTPS origin", () => {
@@ -24,5 +27,16 @@ describe("Public application URL", () => {
 
   it("leaves QR links disabled when no public origin is configured", () => {
     assert.equal(getPublicAppUrl(undefined), null);
+  });
+});
+
+describe("Public RetailTrace URL", () => {
+  it("accepts a configured public verification site and rejects private origins", () => {
+    assert.equal(
+      getPublicRetailTraceUrl("https://trace.example.com/"),
+      "https://trace.example.com",
+    );
+    assert.throws(() => getPublicRetailTraceUrl("http://localhost:5173"));
+    assert.equal(getPublicRetailTraceUrl(undefined), null);
   });
 });

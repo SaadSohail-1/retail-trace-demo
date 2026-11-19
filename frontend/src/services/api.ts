@@ -123,8 +123,46 @@ export interface VerificationResult {
 export interface PublicVerificationResult {
   status: "VERIFIED" | "NOT_VERIFIED" | "PENDING" | "UNAVAILABLE";
   orderReference?: string;
+  recordId?: string;
   publicationStatus?: "PENDING" | "CONFIRMED" | "FAILED" | null;
   transactionId?: string | null;
+  publicationTimestamp?: string;
+  network?: string;
+  streamName?: string;
+  commitmentHash?: string;
+  confirmations?: number;
+  blockHeight?: number;
+  verificationTimestamp: string;
+  checks: {
+    transactionExists: boolean | null;
+    recordFound: boolean | null;
+    commitmentMatches: boolean | null;
+  };
+  independentVerificationUrl?: string;
+  explanation: string;
+}
+
+export interface PublicOrderDetails {
+  status: "FOUND" | "NOT_FOUND";
+  orderReference?: string;
+  retailTraceRecordId?: string;
+  orderDate?: string;
+  products?: Array<{ name: string; quantity: number }>;
+  total?: string;
+  transactionId?: string | null;
+  publicationStatus?: "PENDING" | "CONFIRMED" | "FAILED" | null;
+}
+
+export interface PublicRetailTraceRecord {
+  status: "FOUND" | "NOT_FOUND" | "PENDING" | "UNAVAILABLE";
+  recordId?: string;
+  transactionId?: string | null;
+  publicationStatus?: "PENDING" | "CONFIRMED" | "FAILED" | null;
+  publicationTimestamp?: string;
+}
+
+function isOptionalString(value: Record<string, unknown>, key: string): boolean {
+  return !(key in value) || typeof value[key] === "string";
 }
 
 function isPublicVerificationResult(value: unknown): value is PublicVerificationResult {
@@ -135,16 +173,37 @@ function isPublicVerificationResult(value: unknown): value is PublicVerification
     (value.status !== "VERIFIED" &&
       value.status !== "NOT_VERIFIED" &&
       value.status !== "PENDING" &&
-      value.status !== "UNAVAILABLE") ||
+    value.status !== "UNAVAILABLE") ||
+    !("checks" in value) ||
+    typeof value.checks !== "object" ||
+    value.checks === null ||
+    !("transactionExists" in value.checks) ||
+    (value.checks.transactionExists !== null && typeof value.checks.transactionExists !== "boolean") ||
+    !("recordFound" in value.checks) ||
+    (value.checks.recordFound !== null && typeof value.checks.recordFound !== "boolean") ||
+    !("commitmentMatches" in value.checks) ||
+    (value.checks.commitmentMatches !== null && typeof value.checks.commitmentMatches !== "boolean") ||
+    !("verificationTimestamp" in value) ||
+    typeof value.verificationTimestamp !== "string" ||
+    !("explanation" in value) ||
+    typeof value.explanation !== "string" ||
     ("orderReference" in value && typeof value.orderReference !== "string") ||
+    ("recordId" in value && typeof value.recordId !== "string") ||
     ("publicationStatus" in value &&
-      value.publicationStatus !== null &&
-      value.publicationStatus !== "PENDING" &&
-      value.publicationStatus !== "CONFIRMED" &&
-      value.publicationStatus !== "FAILED") ||
+    value.publicationStatus !== null &&
+    value.publicationStatus !== "PENDING" &&
+    value.publicationStatus !== "CONFIRMED" &&
+    value.publicationStatus !== "FAILED") ||
     ("transactionId" in value &&
-      value.transactionId !== null &&
-      typeof value.transactionId !== "string")
+    value.transactionId !== null &&
+    typeof value.transactionId !== "string") ||
+    !isOptionalString(value, "publicationTimestamp") ||
+    !isOptionalString(value, "network") ||
+    !isOptionalString(value, "streamName") ||
+    !isOptionalString(value, "commitmentHash") ||
+    ("confirmations" in value && typeof value.confirmations !== "number") ||
+    ("blockHeight" in value && typeof value.blockHeight !== "number") ||
+    !isOptionalString(value, "independentVerificationUrl")
   ) {
     return false;
   }
@@ -160,12 +219,124 @@ function parsePublicVerification(value: unknown): PublicVerificationResult {
     ...(value.orderReference !== undefined
       ? { orderReference: value.orderReference }
       : {}),
+    ...(value.recordId !== undefined ? { recordId: value.recordId } : {}),
     ...(value.publicationStatus !== undefined
       ? { publicationStatus: value.publicationStatus }
       : {}),
     ...(value.transactionId !== undefined
       ? { transactionId: value.transactionId }
       : {}),
+    ...(value.publicationTimestamp !== undefined
+      ? { publicationTimestamp: value.publicationTimestamp }
+      : {}),
+    ...(value.network !== undefined ? { network: value.network } : {}),
+    ...(value.streamName !== undefined ? { streamName: value.streamName } : {}),
+    ...(value.commitmentHash !== undefined
+      ? { commitmentHash: value.commitmentHash }
+      : {}),
+    ...(value.confirmations !== undefined ? { confirmations: value.confirmations } : {}),
+    ...(value.blockHeight !== undefined ? { blockHeight: value.blockHeight } : {}),
+    verificationTimestamp: value.verificationTimestamp,
+    checks: {
+      transactionExists: value.checks.transactionExists,
+      recordFound: value.checks.recordFound,
+      commitmentMatches: value.checks.commitmentMatches,
+    },
+    ...(value.independentVerificationUrl !== undefined
+      ? { independentVerificationUrl: value.independentVerificationUrl }
+      : {}),
+    explanation: value.explanation,
+  };
+}
+
+function parsePublicOrder(value: unknown): PublicOrderDetails {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("status" in value) ||
+    (value.status !== "FOUND" && value.status !== "NOT_FOUND")
+  ) {
+    throw new Error("Verdant returned an invalid public order response.");
+  }
+  if (value.status === "NOT_FOUND") return { status: "NOT_FOUND" };
+  if (
+    !("orderReference" in value) ||
+    typeof value.orderReference !== "string" ||
+    !("retailTraceRecordId" in value) ||
+    typeof value.retailTraceRecordId !== "string" ||
+    !("orderDate" in value) ||
+    typeof value.orderDate !== "string" ||
+    !("products" in value) ||
+    !Array.isArray(value.products) ||
+    !value.products.every((product) =>
+      typeof product === "object" &&
+      product !== null &&
+      "name" in product &&
+      typeof product.name === "string" &&
+      "quantity" in product &&
+      typeof product.quantity === "number",
+    ) ||
+    !("total" in value) ||
+    typeof value.total !== "string" ||
+    !("transactionId" in value) ||
+    (value.transactionId !== null && typeof value.transactionId !== "string") ||
+    !("publicationStatus" in value) ||
+    (value.publicationStatus !== null &&
+      value.publicationStatus !== "PENDING" &&
+      value.publicationStatus !== "CONFIRMED" &&
+      value.publicationStatus !== "FAILED")
+  ) {
+    throw new Error("Verdant returned an invalid public order response.");
+  }
+  return {
+    status: "FOUND",
+    orderReference: value.orderReference,
+    retailTraceRecordId: value.retailTraceRecordId,
+    orderDate: value.orderDate,
+    products: value.products.map((product) => ({
+      name: product.name,
+      quantity: product.quantity,
+    })),
+    total: value.total,
+    transactionId: value.transactionId,
+    publicationStatus: value.publicationStatus,
+  };
+}
+
+function parsePublicRecord(value: unknown): PublicRetailTraceRecord {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("status" in value) ||
+    (value.status !== "FOUND" &&
+      value.status !== "NOT_FOUND" &&
+      value.status !== "PENDING" &&
+      value.status !== "UNAVAILABLE")
+  ) {
+    throw new Error("Verdant returned an invalid RetailTrace record response.");
+  }
+  if (value.status !== "FOUND") return { status: value.status };
+  if (
+    !("recordId" in value) ||
+    typeof value.recordId !== "string" ||
+    !("transactionId" in value) ||
+    (value.transactionId !== null && typeof value.transactionId !== "string") ||
+    !("publicationStatus" in value) ||
+    (value.publicationStatus !== null &&
+      value.publicationStatus !== "PENDING" &&
+      value.publicationStatus !== "CONFIRMED" &&
+      value.publicationStatus !== "FAILED") ||
+    !("publicationTimestamp" in value) ||
+    typeof value.publicationTimestamp !== "string"
+  ) {
+    throw new Error("Verdant returned an invalid RetailTrace record response.");
+  }
+  return {
+    status: "FOUND",
+    recordId: value.recordId,
+    transactionId: value.transactionId,
+    publicationStatus: value.publicationStatus,
+    publicationTimestamp: value.publicationTimestamp,
   };
 }
 
@@ -314,5 +485,19 @@ export const api = {
       `/api/public/verify/${encodeURIComponent(recordId)}`,
     );
     return parsePublicVerification(response.data?.data);
+  },
+
+  async getPublicOrder(recordId: string): Promise<PublicOrderDetails> {
+    const response = await client.get<ApiResponse<unknown>>(
+      `/api/public/order/${encodeURIComponent(recordId)}`,
+    );
+    return parsePublicOrder(response.data?.data);
+  },
+
+  async getPublicRetailTraceRecord(recordId: string): Promise<PublicRetailTraceRecord> {
+    const response = await client.get<ApiResponse<unknown>>(
+      `/api/public/record/${encodeURIComponent(recordId)}`,
+    );
+    return parsePublicRecord(response.data?.data);
   },
 };

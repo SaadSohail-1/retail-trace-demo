@@ -104,6 +104,25 @@ describe("RetailTrace API contract", () => {
           transactionId: verifiedTransactionId,
         }));
       });
+      app.get("/public/verify/:transactionId", (request, response) => {
+        calls.push(`GET /public/verify/${request.params.transactionId}`);
+        response.json(envelope({
+          status: "VERIFIED",
+          transactionExists: true,
+          recordFound: true,
+          commitmentMatches: true,
+          transactionId: request.params.transactionId,
+          publicationStatus: "CONFIRMED",
+          network: "test-chain",
+          recordId: record.recordId,
+          streamName: "records",
+          commitmentHash: `sha256:${"a".repeat(64)}`,
+          confirmations: 3,
+          blockHeight: 9876,
+          publicationTimestamp: record.createdAt,
+          explanation: "verified",
+        }));
+      });
     }, async (api) => {
       assert.equal((await api.checkHealth()).status, "connected");
       assert.deepEqual(await api.listSchemas(), [
@@ -122,6 +141,9 @@ describe("RetailTrace API contract", () => {
         verified: true,
         transactionId: "tx-1",
       });
+      const publicVerification = await api.verifyPublicTransaction("a".repeat(64));
+      assert.equal(publicVerification.status, "VERIFIED");
+      assert.equal(publicVerification.blockHeight, 9876);
       assert.deepEqual(await api.verifyTransaction("tx-1"), {
         recordId: record.recordId,
         verified: true,
@@ -139,6 +161,7 @@ describe("RetailTrace API contract", () => {
     assert.ok(calls.includes("POST /schemas Product"));
     assert.ok(calls.includes("POST /records schema-1"));
     assert.ok(calls.includes("GET /records/507f1f77bcf86cd799439011/verify"));
+    assert.ok(calls.includes(`GET /public/verify/${"a".repeat(64)}`));
   });
 
   it("accepts pending publication without a transaction ID and rejects false confirmation", async () => {

@@ -30,7 +30,10 @@ if (!retailTraceApiKey) {
   throw new Error("RETAILTRACE_API_KEY is required");
 }
 
-export function getPublicAppUrl(value: string | undefined): string | null {
+function getPublicHttpsOrigin(
+  value: string | undefined,
+  variableName: string,
+): string | null {
   if (!value) {
     return null;
   }
@@ -73,10 +76,18 @@ export function getPublicAppUrl(value: string | undefined): string | null {
     isPrivateIpv4 ||
     isPrivateIpv6
   ) {
-    throw new Error("PUBLIC_APP_URL must be an HTTPS public origin, not a local or private address");
+    throw new Error(`${variableName} must be an HTTPS public origin, not a local or private address`);
   }
 
   return parsed.origin;
+}
+
+export function getPublicAppUrl(value: string | undefined): string | null {
+  return getPublicHttpsOrigin(value, "PUBLIC_APP_URL");
+}
+
+export function getPublicRetailTraceUrl(value: string | undefined): string | null {
+  return getPublicHttpsOrigin(value, "PUBLIC_RETAILTRACE_URL");
 }
 
 export const env = {
@@ -84,6 +95,7 @@ export const env = {
   databaseUrl,
   frontendOrigin: process.env.FRONTEND_ORIGIN ?? "http://localhost:5173",
   publicAppUrl: getPublicAppUrl(process.env.PUBLIC_APP_URL),
+  publicRetailTraceUrl: getPublicRetailTraceUrl(process.env.PUBLIC_RETAILTRACE_URL),
   retailTraceBaseUrl: retailTraceBaseUrl.replace(/\/+$/, ""),
   retailTraceApiKey,
 };

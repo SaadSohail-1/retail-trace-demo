@@ -9,6 +9,7 @@ export default function AppRouter() {
       <Routes>
         <Route path="/" element={<Storefront />} />
         <Route path="/admin" element={<AdminDashboard />} />
+        <Route path="/verify/:recordId/receipt" element={<PublicVerificationPage />} />
         <Route path="/verify/:recordId" element={<PublicVerificationPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

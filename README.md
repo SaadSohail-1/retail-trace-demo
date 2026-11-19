@@ -210,8 +210,11 @@ The RetailTrace API key must remain server-side.
 
 The order receipt displays a QR code and clickable verification link only when
 RetailTrace confirms publication and returns a transaction ID. `/verify/:recordId`
-calls Verdant's public verification endpoint; it does not expose customer data
-or call RetailTrace from the browser.
+progressively retrieves a minimal order summary and RetailTrace record, then
+checks the actual blockchain transaction through Verdant's backend. The page
+offers a printable receipt and a generated PDF. When `PUBLIC_RETAILTRACE_URL` is
+configured, customers can open RetailTrace's public transaction verifier in a
+new tab. The browser never calls RetailTrace or receives its API key.
 
 ## PostgreSQL and database
 
@@ -303,6 +306,7 @@ RETAILTRACE_BASE_URL=http://localhost:5000/api
 RETAILTRACE_API_KEY=<active RetailTrace bearer API key>
 FRONTEND_ORIGIN=http://localhost:5173
 PUBLIC_APP_URL=https://your-public-domain.example
+PUBLIC_RETAILTRACE_URL=https://your-public-retailtrace-domain.example
 ```
 
 `PORT`, `DATABASE_URL`, `RETAILTRACE_BASE_URL`, and `RETAILTRACE_API_KEY` are
@@ -313,6 +317,9 @@ must remain server-side. `PUBLIC_APP_URL` is optional; when set, replace the
 placeholder with an HTTPS public origin. Localhost, loopback, and private LAN
 addresses are rejected. Leave it unset for local-only development; receipts
 will not show QR links until a public origin is configured.
+`PUBLIC_RETAILTRACE_URL` is optional and must be the public RetailTrace website
+origin. It enables the independent verification link; when unset, Verdant still
+verifies the order but does not invent a RetailTrace production URL.
 
 ### Schema initialization and versioning
 
@@ -406,7 +413,9 @@ is not returned to callers. CORS is not an authentication mechanism.
 | `POST` | `/api/integration/retry/:syncId` | Refresh or safely retry a Supplier, Product, or Order mapping | None locally; backend uses RetailTrace bearer key | Implemented and tested |
 | `GET` | `/api/integration/records/:recordId/verify` | Ask RetailTrace to verify a record | None locally; backend uses RetailTrace bearer key | Implemented and tested |
 | `GET` | `/api/integration/transactions/:transactionId/verify` | Find a record by transaction ID and verify that record | None locally; backend uses RetailTrace bearer key | Implemented; composed from RetailTrace record-list and record-verification endpoints |
-| `GET` | `/api/public/verify/:recordId` | Public, rate-limited order verification for QR links | None | Returns only verification state, public order reference, publication state, and transaction ID |
+| `GET` | `/api/public/order/:recordId` | Public order summary for QR verification | None | Allowlisted order reference, date, product names/quantities, and total |
+| `GET` | `/api/public/record/:recordId` | Public RetailTrace record lookup for QR verification | None | Minimal record ID, transaction ID, publication state, and timestamp |
+| `GET` | `/api/public/verify/:recordId` | Public, rate-limited blockchain verification for QR links | None | Verification result and individual transaction/record/commitment checks |
 | `POST` | `/api/suppliers` | Validate, save, and synchronize a Supplier | None | Implemented and API-tested |
 | `GET` | `/api/suppliers` | List Suppliers with their sync state | None | Implemented and API-tested |
 | `GET` | `/api/suppliers/:id` | Get a Supplier and its sync state | None | Implemented and API-tested |
@@ -436,13 +445,14 @@ initialization includes a `status` of `initialized`, `partial`, or `failed`
 inside `data`. Upstream errors are converted to a safe error response; no
 request or response includes the API key.
 
-The public verification endpoint returns `{ "success": true, "data": ... }`
-with `status` equal to `VERIFIED`, `NOT_VERIFIED`, `PENDING`, or `UNAVAILABLE`.
-When available, `data` also contains a public order reference, publication
-status, and blockchain transaction ID. It never includes the local order ID,
-customer details, or RetailTrace credentials. Requests are limited to 30 per
-minute per client IP. `VERIFIED` is returned only after RetailTrace's
-record-verification result confirms the blockchain commitment.
+The public verification endpoints use `{ "success": true, "data": ... }`
+envelopes. The order summary includes only a pseudonymous order reference, date,
+product names/quantities, and total; customer details, local database IDs, and
+RetailTrace credentials are not returned. Verification reports the transaction,
+publication time, and individual transaction/record/commitment checks. Requests
+are limited to 30 per minute per client IP. `VERIFIED` requires the actual
+RetailTrace public transaction verifier to confirm the blockchain commitment;
+stored sync status alone is not sufficient.
 
 ## RetailTrace API contract used
 
