@@ -22,8 +22,39 @@ function requiredParam(value: string | string[] | undefined, name: string): stri
   return value;
 }
 
+function isDatabaseSetupFailure(error: unknown): boolean {
+  const pending = [error];
+  const visited = new Set<unknown>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || visited.has(current)) continue;
+    visited.add(current);
+    if (typeof current === "object") {
+      const candidate = current as { code?: unknown; message?: unknown; cause?: unknown };
+      if (typeof candidate.code === "string" && /^(P1001|P1002|P2021|P2022|ECONNREFUSED|ETIMEDOUT)$/.test(candidate.code)) return true;
+      if (typeof candidate.message === "string" && /connection refused|can't reach database|database server is not reachable|relation .* does not exist|column .* does not exist|connection terminated/i.test(candidate.message)) return true;
+      pending.push(candidate.cause);
+    }
+  }
+  return false;
+}
+
 export async function getStatus(_request: Request, response: Response): Promise<void> {
-  response.json({ success: true, data: await getIntegrationStatus() });
+  try {
+    response.json({ success: true, data: await getIntegrationStatus() });
+  } catch (error) {
+    if (isDatabaseSetupFailure(error)) {
+      response.status(503).json({
+        success: false,
+        error: {
+          code: "DATABASE_UNAVAILABLE",
+          message: "Verdant’s PostgreSQL database could not be reached or is missing migrations. Start the postgres service and run `npx prisma migrate deploy` in backend, then retry.",
+        },
+      });
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function getHealth(_request: Request, response: Response): Promise<void> {

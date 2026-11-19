@@ -29,6 +29,7 @@ import {
   type OrderView,
   type VerificationResult,
   type SchemaDetail,
+  type SchemaField,
   type CompatibilityReport,
   type DatabaseModel,
   type SchemaMapping,
@@ -115,6 +116,10 @@ export function AdminDashboard() {
   const [compatibility, setCompatibility] = useState<CompatibilityReport | null>(null)
   const [schemaUploadError, setSchemaUploadError] = useState('')
   const [schemaUploadSuccess, setSchemaUploadSuccess] = useState('')
+  const [schemaCreationModel, setSchemaCreationModel] = useState('')
+  const [schemaCreationName, setSchemaCreationName] = useState('')
+  const [schemaCreationError, setSchemaCreationError] = useState('')
+  const [schemaCreating, setSchemaCreating] = useState(false)
   const [schemaError, setSchemaError] = useState('')
   const [modelsError, setModelsError] = useState('')
   const [schemaDetailLoading, setSchemaDetailLoading] = useState(false)
@@ -343,6 +348,73 @@ export function AdminDashboard() {
       setSchemaDetailError(getErrorMessage(error))
     } finally {
       setSchemaDetailLoading(false)
+    }
+  }
+
+  function createDefinitionFromModel(model: DatabaseModel) {
+    const omitted: string[] = []
+    const fields = model.fields.flatMap((field): SchemaField[] => {
+      const rawType = field.databaseType.replace(/\[\]$/, '')
+      const arrayType = field.databaseType.endsWith('[]')
+      if (arrayType) {
+        omitted.push(`${field.name} (${field.databaseType}: scalar arrays are not supported)`)
+        return []
+      }
+      if (field.reference) {
+        const target = schemas
+          .filter((schema) => schema.name.toLowerCase() === field.reference!.targetEntity.toLowerCase())
+          .sort((a, b) => b.version - a.version)[0]
+        if (!target) {
+          omitted.push(`${field.name} (reference to ${field.reference.targetEntity}: register that target schema first)`)
+          return []
+        }
+        return [{ name: field.name, type: 'reference' as const, targetSchemaId: target.schemaId, required: field.required }]
+      }
+      if (rawType === 'String' || rawType.startsWith('Enum(')) {
+        return [{ name: field.name, type: 'string' as const, required: field.required }]
+      }
+      if (rawType === 'Int' || rawType === 'BigInt') {
+        return [{ name: field.name, type: 'integer' as const, required: field.required }]
+      }
+      if (rawType === 'Float' || rawType === 'Decimal') {
+        return [{ name: field.name, type: 'number' as const, required: field.required }]
+      }
+      if (rawType === 'Boolean') {
+        return [{ name: field.name, type: 'boolean' as const, required: field.required }]
+      }
+      if (rawType === 'DateTime' || rawType === 'Date') {
+        return [{ name: field.name, type: 'date' as const, required: field.required }]
+      }
+      omitted.push(`${field.name} (${field.databaseType}: no supported RetailTrace field type)`)
+      return []
+    })
+    return { fields, omitted }
+  }
+
+  async function handleCreateSchemaFromModel() {
+    const model = models.find((candidate) => candidate.entity === schemaCreationModel)
+    if (!model) return
+    setSchemaCreationError('')
+    setSchemaCreating(true)
+    try {
+      const definition = createDefinitionFromModel(model)
+      const missingReferenceTargets = definition.omitted.filter((item) => item.includes('reference to'))
+      if (missingReferenceTargets.length > 0) {
+        throw new Error(`Register the referenced RetailTrace schema(s) before creating this schema: ${missingReferenceTargets.join('; ')}`)
+      }
+      if (definition.fields.length === 0) {
+        throw new Error('No supported fields are available. Check the model field types and reference target schemas.')
+      }
+      const created = await api.uploadSchema({ name: schemaCreationName.trim() || model.entity, fields: definition.fields })
+      setSchemas(await api.getSchemas())
+      setSchemaCreationName('')
+      const omissions = definition.omitted.length > 0 ? ` Excluded: ${definition.omitted.join('; ')}.` : ''
+      setSchemaUploadSuccess(`Created ${created.name} v${created.version} from Prisma model ${model.entity}.${omissions}`)
+      setSchemaCreationModel('')
+    } catch (error) {
+      setSchemaCreationError(getErrorMessage(error))
+    } finally {
+      setSchemaCreating(false)
     }
   }
 
@@ -678,6 +750,53 @@ export function AdminDashboard() {
                   onChange={(event) => void handleSchemaUpload(event)}
                 />
               </label>
+              <div className="schema-model-creator">
+                <div className="eyebrow muted-eyebrow">CREATE FROM YOUR DATABASE</div>
+                <p className="panel-description">
+                  Build a RetailTrace definition from a Prisma model. Foreign keys become references when their target schema exists.
+                </p>
+                {modelsError ? (
+                  <p className="notice notice-error" role="alert">Could not read Prisma models: {modelsError}</p>
+                ) : (
+                  <>
+                    <div className="schema-creator-controls">
+                      <label>
+                        Prisma model
+                        <select value={schemaCreationModel} onChange={(event) => { setSchemaCreationModel(event.target.value); setSchemaCreationError('') }}>
+                          <option value="">Choose a model…</option>
+                          {models.map((model) => <option key={model.entity} value={model.entity}>{model.entity}</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        RetailTrace schema name
+                        <input value={schemaCreationName} onChange={(event) => setSchemaCreationName(event.target.value)} placeholder={schemaCreationModel || 'Uses model name'} />
+                      </label>
+                    </div>
+                    {schemaCreationModel && (() => {
+                      const model = models.find((candidate) => candidate.entity === schemaCreationModel)
+                      if (!model) return null
+                      const preview = createDefinitionFromModel(model)
+                      const hasMissingReferenceTargets = preview.omitted.some((item) => item.includes('reference to'))
+                      return (
+                        <div className="schema-model-preview">
+                          <strong>Preview · {preview.fields.length} fields from {model.entity}</strong>
+                          <div className="schema-model-preview-fields">
+                            {preview.fields.map((field) => (
+                              <span key={field.name}><b>{field.name}</b> · {field.type}{field.type === 'reference' ? ` → ${schemas.find((item) => item.schemaId === field.targetSchemaId)?.name ?? 'target schema'}` : ''}{field.required ? ' · required' : ' · optional'}</span>
+                            ))}
+                          </div>
+                          {preview.omitted.length > 0 && <p className="schema-model-omissions">Not represented: {preview.omitted.join('; ')}</p>}
+                          <button className="button button-primary" disabled={schemaCreating || preview.fields.length === 0 || hasMissingReferenceTargets} onClick={() => void handleCreateSchemaFromModel()}>
+                            {schemaCreating ? <LoaderCircle size={16} className="spin" /> : <FileStack size={16} />}
+                            Create from {model.entity}
+                          </button>
+                        </div>
+                      )
+                    })()}
+                    {schemaCreationError && <p className="notice notice-error" role="alert">{schemaCreationError}</p>}
+                  </>
+                )}
+              </div>
               {schemaUploadError && <div className="notice notice-error" role="alert">{schemaUploadError}</div>}
               {schemaUploadSuccess && <div className="notice notice-success" role="status">{schemaUploadSuccess}</div>}
               <div className="schema-list">

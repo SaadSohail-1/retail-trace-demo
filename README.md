@@ -48,11 +48,15 @@ The integration dashboard's **RetailTrace schemas** section fetches schemas
 owned by the business identified by Verdant's server-side RetailTrace API
 credentials. Selecting a schema fetches its full definition and displays its
 fields, required/optional status, reference targets, and multiple-reference
-settings. The upload control accepts native RetailTrace JSON and standard
-object-shaped JSON Schema, previews the converted definition, and sends native
-`{ name, fields }` to `POST /api/integration/schemas`; Verdant forwards it
-without accepting a business ID from the browser. RetailTrace remains the
-authoritative validator and enforces business ownership.
+settings. Verdant implements RetailTrace's available schema operations: list,
+fetch one full definition, and create a schema. RetailTrace currently exposes no
+schema update or delete endpoint. The upload control accepts native
+`{ name, fields }` JSON. The model builder also reads the checked-in Prisma
+models, previews the derived RetailTrace fields, then posts the definition to
+`POST /api/integration/schemas`. Verdant forwards it without accepting a
+business ID from the browser; RetailTrace remains the authoritative validator.
+Standard JSON Schema conversion is available in RetailTrace's own schema
+builder; Verdant creates native definitions directly from Prisma metadata.
 
 Compatibility checks are read-only. Verdant parses structural metadata from the
 actual checked-in Prisma schema; it does not read customer rows or return
@@ -68,6 +72,11 @@ the comparison * 100`, rounded to the nearest integer. Reference target schema
 names are checked against configured model associations. The score does not
 verify data values, record contents, external key translation, or application
 behavior. Saving mapping configuration does not migrate either database.
+
+If the dashboard reports that Verdant PostgreSQL is unavailable or migrations
+are missing, start the `postgres` service from `docker-compose.yml` and run
+`npx prisma migrate deploy` from `backend/`. The status endpoint now returns this
+actionable database diagnostic for known connection and missing-schema errors.
 
 ## Architecture
 
