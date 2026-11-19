@@ -266,7 +266,7 @@ const client = axios.create({
 });
 
 const publicClient = axios.create({
-  baseURL: import.meta.env.VITE_PUBLIC_API_BASE_URL ?? "",
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? "",
   timeout: 15_000,
   headers: {
     Accept: "application/json",
